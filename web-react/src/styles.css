@@ -404,6 +404,185 @@ body {
   gap: 0.4rem;
 }
 
+.tactical-page {
+  gap: 1rem;
+}
+
+.tactical-header p {
+  max-width: 88ch;
+}
+
+.tactical-layout {
+  display: grid;
+  grid-template-columns: minmax(500px, 1fr) minmax(260px, 320px);
+  gap: 1rem;
+}
+
+.tactical-board-panel {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.tactical-toolbar {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.tool-group {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.tool-group span {
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.tactical-btn.active {
+  border-color: rgba(127, 29, 21, 0.3);
+  background: linear-gradient(120deg, rgba(198, 64, 45, 0.12), rgba(198, 64, 45, 0.04));
+}
+
+.tactical-grid {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  display: grid;
+  gap: 1px;
+  background: rgba(30, 31, 36, 0.24);
+}
+
+.tactical-cell {
+  position: relative;
+  border: 0;
+  padding: 0;
+  min-height: 35px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ece8de;
+  cursor: pointer;
+}
+
+.terrain-plain {
+  background: #e8e2d2;
+}
+
+.terrain-wall {
+  background: linear-gradient(160deg, #4f5562, #343b48);
+}
+
+.terrain-difficult {
+  background: linear-gradient(160deg, #809569, #5f7d57);
+}
+
+.tactical-cell.is-fogged::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(16, 20, 27, 0.58);
+}
+
+.tactical-cell.has-ping::before {
+  content: "";
+  position: absolute;
+  inset: 22%;
+  border-radius: 999px;
+  border: 2px solid rgba(237, 111, 70, 0.92);
+  box-shadow: 0 0 0 2px rgba(237, 111, 70, 0.25);
+}
+
+.token-chip {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  min-width: 28px;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0.18rem 0.38rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #fff;
+}
+
+.token-chip.team-blue {
+  background: #2563eb;
+}
+
+.token-chip.team-red {
+  background: #c0392b;
+}
+
+.tactical-side-panel {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.tactical-side-panel h2 {
+  margin: 0;
+}
+
+.token-list {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.token-row {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 0.46rem 0.55rem;
+  display: grid;
+  gap: 0.1rem;
+  text-align: left;
+}
+
+.token-row.selected {
+  border-color: rgba(127, 29, 21, 0.36);
+  background: rgba(198, 64, 45, 0.1);
+}
+
+.token-row span {
+  font-weight: 700;
+}
+
+.token-row small {
+  color: var(--ink-soft);
+}
+
+.ops-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.4rem;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.ops-list li {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.42rem 0.5rem;
+  background: rgba(255, 255, 255, 0.68);
+  display: grid;
+  gap: 0.16rem;
+}
+
+.ops-meta {
+  color: var(--ink-soft);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ops-empty {
+  color: var(--ink-soft);
+}
+
 @media (max-width: 1120px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -417,6 +596,10 @@ body {
   .feature-layout {
     grid-template-columns: 1fr;
   }
+
+  .tactical-layout {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 760px) {
@@ -426,5 +609,9 @@ body {
 
   .metrics-strip {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .tactical-cell {
+    min-height: 30px;
   }
 }

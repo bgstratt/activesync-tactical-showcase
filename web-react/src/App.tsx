@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
 import { FeaturePage } from "./pages/FeaturePage";
 import { LandingPage } from "./pages/LandingPage";
+import { TacticalStrategyPage } from "./pages/TacticalStrategyPage";
 
 export function App() {
   return (
@@ -17,7 +18,7 @@ export function App() {
         <Route path="/features/scripts" element={<FeaturePage routePath="/features/scripts" />} />
         <Route path="/features/offline" element={<FeaturePage routePath="/features/offline" />} />
         <Route path="/features/replay" element={<FeaturePage routePath="/features/replay" />} />
-        <Route path="/modes/tactical-strategy" element={<FeaturePage routePath="/modes/tactical-strategy" />} />
+        <Route path="/modes/tactical-strategy" element={<TacticalStrategyPage />} />
         <Route path="/modes/dungeon-builder" element={<FeaturePage routePath="/modes/dungeon-builder" />} />
         <Route path="/modes/pixel-sandbox" element={<FeaturePage routePath="/modes/pixel-sandbox" />} />
         <Route path="/modes/card-battle" element={<FeaturePage routePath="/modes/card-battle" />} />
