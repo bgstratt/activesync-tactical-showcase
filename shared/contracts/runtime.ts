@@ -31,3 +31,23 @@ export interface ReplicationTopologyResponse {
   peers: PeerStatus[];
   activeLinks: PeerLink[];
 }
+
+export interface ReplayEventItem {
+  timestampUtc: string;
+  stream: string;
+  type: string;
+  peerId: string | null;
+  message: string;
+  payloadJson: string | null;
+}
+
+export interface ReplayEventsResponse {
+  sessionId: string;
+  updatedAtUtc: string;
+  events: ReplayEventItem[];
+}
+
+export interface PeerActionResponse {
+  ok: boolean;
+  message: string;
+}

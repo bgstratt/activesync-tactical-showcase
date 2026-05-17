@@ -351,6 +351,52 @@ body {
   color: var(--ink-soft);
 }
 
+.topology-note {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+.replay-log {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.replay-log h3 {
+  margin: 0;
+}
+
+.replay-log ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 260px;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.replay-log li {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+  background: rgba(255, 255, 255, 0.66);
+  display: grid;
+  gap: 0.22rem;
+}
+
+.replay-meta {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.replay-peer {
+  font-size: 0.82rem;
+  color: #7f1d15;
+}
+
 .telemetry-panel ul {
   margin: 0;
   padding-left: 1.1rem;

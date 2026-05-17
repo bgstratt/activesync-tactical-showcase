@@ -33,3 +33,22 @@ public sealed record PeerLink(
     string ToPeerId,
     int ReplicationLagMs
 );
+
+public sealed record ReplayEventsResponse(
+    string SessionId,
+    DateTimeOffset UpdatedAtUtc,
+    IReadOnlyList<ReplayEventItem> Events
+);
+
+public sealed record ReplayEventItem(
+    DateTimeOffset TimestampUtc,
+    string Stream,
+    string Type,
+    string? PeerId,
+    string Message,
+    string? PayloadJson
+);
+
+public sealed record PeerActionRequest(string PeerId);
+
+public sealed record PeerActionResponse(bool Ok, string Message);

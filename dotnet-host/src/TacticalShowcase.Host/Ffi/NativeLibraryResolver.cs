@@ -72,6 +72,16 @@ internal static class NativeLibraryResolver
         yield return Path.Combine(cwd, "host-ffi", "target", "release", fileName);
         yield return Path.Combine(cwd, "..", "..", "target", "debug", fileName);
         yield return Path.Combine(cwd, "..", "..", "target", "release", fileName);
+
+        // Sibling workspace fallback when showcase host and activesync repo are side by side.
+        yield return Path.Combine(cwd, "..", "activesync", "target", "debug", fileName);
+        yield return Path.Combine(cwd, "..", "activesync", "target", "release", fileName);
+        yield return Path.Combine(cwd, "..", "..", "activesync", "target", "debug", fileName);
+        yield return Path.Combine(cwd, "..", "..", "activesync", "target", "release", fileName);
+        yield return Path.Combine(cwd, "..", "..", "..", "activesync", "target", "debug", fileName);
+        yield return Path.Combine(cwd, "..", "..", "..", "activesync", "target", "release", fileName);
+        yield return Path.Combine(cwd, "..", "..", "..", "..", "activesync", "target", "debug", fileName);
+        yield return Path.Combine(cwd, "..", "..", "..", "..", "activesync", "target", "release", fileName);
     }
 
     private static string GetPlatformLibraryFileName()

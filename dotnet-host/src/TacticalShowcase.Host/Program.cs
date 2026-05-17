@@ -1,10 +1,12 @@
 using TacticalShowcase.Host.Contracts;
 using TacticalShowcase.Host.Ffi;
+using TacticalShowcase.Host.Runtime;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls("http://localhost:5074");
 
 builder.Services.AddSingleton<INativeRuntimeProbe, NativeRuntimeProbe>();
+builder.Services.AddSingleton<IRuntimeReplicationService, RuntimeReplicationService>();
 
 builder.Services.AddCors(options =>
 {
@@ -44,26 +46,26 @@ app.MapGet("/api/host/health", (INativeRuntimeProbe runtimeProbe) =>
     ));
 });
 
-app.MapGet("/api/replication/topology", () =>
+app.MapGet("/api/replication/topology", (IRuntimeReplicationService runtime) =>
 {
-    var now = DateTimeOffset.UtcNow;
-    return Results.Ok(new ReplicationTopologyResponse(
-        SessionId: "tactical-demo-session",
-        UpdatedAtUtc: now,
-        Peers:
-        [
-            new PeerStatus("alpha", true, now.AddSeconds(-4), 133),
-            new PeerStatus("bravo", true, now.AddSeconds(-2), 128),
-            new PeerStatus("charlie", false, now.AddMinutes(-1), 121),
-            new PeerStatus("delta", true, now.AddSeconds(-7), 137)
-        ],
-        ActiveLinks:
-        [
-            new PeerLink("alpha", "bravo", 9),
-            new PeerLink("alpha", "delta", 12),
-            new PeerLink("bravo", "delta", 8)
-        ]
-    ));
+    return Results.Ok(runtime.GetTopology());
+});
+
+app.MapGet("/api/replication/events", (IRuntimeReplicationService runtime, int? take) =>
+{
+    return Results.Ok(runtime.GetReplayEvents(take ?? 60));
+});
+
+app.MapPost("/api/runtime/peers/connect", (IRuntimeReplicationService runtime, PeerActionRequest request) =>
+{
+    var result = runtime.ConnectPeer(request.PeerId);
+    return Results.Ok(new PeerActionResponse(result.IsSuccess, result.Message));
+});
+
+app.MapPost("/api/runtime/peers/disconnect", (IRuntimeReplicationService runtime, PeerActionRequest request) =>
+{
+    var result = runtime.DisconnectPeer(request.PeerId);
+    return Results.Ok(new PeerActionResponse(result.IsSuccess, result.Message));
 });
 
 app.Run();
