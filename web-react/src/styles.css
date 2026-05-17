@@ -301,6 +301,56 @@ body {
   border-color: rgba(0, 0, 0, 0.12);
 }
 
+.runtime-preview {
+  margin-top: 1rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 0.7rem;
+}
+
+.runtime-preview h3 {
+  margin: 0;
+}
+
+.error-text {
+  margin: 0;
+  color: #7f1d15;
+  font-weight: 600;
+}
+
+.kv-grid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.6rem;
+}
+
+.kv-grid div {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.kv-grid dt {
+  font-size: 0.74rem;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.kv-grid dd {
+  margin: 0.2rem 0 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.topology-summary p {
+  margin: 0.22rem 0;
+  color: var(--ink-soft);
+}
+
 .telemetry-panel ul {
   margin: 0;
   padding-left: 1.1rem;

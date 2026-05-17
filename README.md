@@ -35,6 +35,19 @@ This repository focuses on a polished, multi-page demonstration experience rathe
 3. Embedded .NET host integration path for local runtime.
 4. First playable mode vertical slice: Tactical Strategy.
 
+## Quick Start
+
+1. Start the host:
+	- `cd dotnet-host/src/TacticalShowcase.Host`
+	- `dotnet run`
+2. Start the web app (new terminal):
+	- `cd web-react`
+	- `npm install`
+	- `npm run dev -- --host 127.0.0.1 --port 4173`
+3. Open `http://127.0.0.1:4173`.
+
+Host health is exposed at `http://localhost:5074/api/host/health`. If the native runtime cannot load, the endpoint stays reachable and reports the reason.
+
 ## Detailed Plan
 
 See `PLAN.md` and `docs/ARCHITECTURE.md`.
