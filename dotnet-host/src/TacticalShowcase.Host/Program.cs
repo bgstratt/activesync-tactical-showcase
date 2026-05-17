@@ -68,4 +68,14 @@ app.MapPost("/api/runtime/peers/disconnect", (IRuntimeReplicationService runtime
     return Results.Ok(new PeerActionResponse(result.IsSuccess, result.Message));
 });
 
+app.MapGet("/api/tactical/state", (IRuntimeReplicationService runtime) =>
+{
+    return Results.Ok(runtime.GetTacticalState());
+});
+
+app.MapPost("/api/tactical/action", (IRuntimeReplicationService runtime, TacticalActionRequest request) =>
+{
+    return Results.Ok(runtime.ApplyTacticalAction(request));
+});
+
 app.Run();

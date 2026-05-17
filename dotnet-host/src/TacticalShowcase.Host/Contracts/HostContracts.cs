@@ -52,3 +52,42 @@ public sealed record ReplayEventItem(
 public sealed record PeerActionRequest(string PeerId);
 
 public sealed record PeerActionResponse(bool Ok, string Message);
+
+public sealed record TacticalTokenDto(
+    string Id,
+    string Name,
+    string Team,
+    int X,
+    int Y,
+    int Hp
+);
+
+public sealed record TacticalPingDto(
+    string Id,
+    int X,
+    int Y,
+    string Label
+);
+
+public sealed record TacticalBoardStateResponse(
+    int Rows,
+    int Cols,
+    IReadOnlyList<IReadOnlyList<string>> Terrain,
+    IReadOnlyList<IReadOnlyList<bool>> Fog,
+    IReadOnlyList<TacticalTokenDto> Tokens,
+    IReadOnlyList<TacticalPingDto> Pings,
+    int Turn,
+    DateTimeOffset UpdatedAtUtc
+);
+
+public sealed record TacticalActionRequest(
+    string Action,
+    int? X,
+    int? Y,
+    string? Value,
+    string? TokenId,
+    string? Team,
+    string? Label
+);
+
+public sealed record TacticalActionResponse(bool Ok, string Message, TacticalBoardStateResponse State);

@@ -51,3 +51,46 @@ export interface PeerActionResponse {
   ok: boolean;
   message: string;
 }
+
+export interface TacticalToken {
+  id: string;
+  name: string;
+  team: "blue" | "red";
+  x: number;
+  y: number;
+  hp: number;
+}
+
+export interface TacticalPing {
+  id: string;
+  x: number;
+  y: number;
+  label: string;
+}
+
+export interface TacticalBoardState {
+  rows: number;
+  cols: number;
+  terrain: string[][];
+  fog: boolean[][];
+  tokens: TacticalToken[];
+  pings: TacticalPing[];
+  turn: number;
+  updatedAtUtc: string;
+}
+
+export interface TacticalActionRequest {
+  action: string;
+  x?: number;
+  y?: number;
+  value?: string;
+  tokenId?: string;
+  team?: "blue" | "red";
+  label?: string;
+}
+
+export interface TacticalActionResponse {
+  ok: boolean;
+  message: string;
+  state: TacticalBoardState;
+}

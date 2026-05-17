@@ -11,6 +11,8 @@ public interface IRuntimeReplicationService
     ReplayEventsResponse GetReplayEvents(int take);
     RuntimePeerActionResult ConnectPeer(string peerId);
     RuntimePeerActionResult DisconnectPeer(string peerId);
+    TacticalBoardStateResponse GetTacticalState();
+    TacticalActionResponse ApplyTacticalAction(TacticalActionRequest request);
 }
 
 public sealed record RuntimePeerActionResult(bool IsSuccess, string Message);
@@ -26,6 +28,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
     private readonly Dictionary<string, PeerRuntimeState> _peers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<ulong, string> _sessionToPeer = new();
     private readonly List<ReplayEventItem> _eventLog = new();
+    private TacticalState _tacticalState = TacticalState.CreateDefault();
 
     private const string DemoRoomId = "tactical-demo-session";
 
@@ -171,6 +174,47 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         }
     }
 
+    public TacticalBoardStateResponse GetTacticalState()
+    {
+        lock (_sync)
+        {
+            return ToTacticalResponse(_tacticalState);
+        }
+    }
+
+    public TacticalActionResponse ApplyTacticalAction(TacticalActionRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Action))
+        {
+            return new TacticalActionResponse(false, "action is required", ToTacticalResponse(_tacticalState));
+        }
+
+        lock (_sync)
+        {
+            var action = request.Action.Trim().ToLowerInvariant();
+            var result = action switch
+            {
+                "terrain" => ApplyTerrain(request),
+                "fog" => ApplyFog(request),
+                "ping" => ApplyPing(request),
+                "erase" => ApplyErase(request),
+                "token-move" => ApplyTokenMove(request),
+                "token-add" => ApplyTokenAdd(request),
+                "advance-turn" => ApplyAdvanceTurn(),
+                "reset" => ApplyReset(),
+                _ => new RuntimePeerActionResult(false, $"Unsupported action '{request.Action}'")
+            };
+
+            if (result.IsSuccess)
+            {
+                _tacticalState = _tacticalState with { UpdatedAtUtc = DateTimeOffset.UtcNow };
+                PersistTacticalState();
+            }
+
+            return new TacticalActionResponse(result.IsSuccess, result.Message, ToTacticalResponse(_tacticalState));
+        }
+    }
+
     private void BootstrapDemoPeersIfNeeded()
     {
         if (_bootstrapAttempted)
@@ -194,6 +238,216 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
             {
                 AddLocalEvent("bootstrap", "peer-connect-failed", result.Message, peerId);
             }
+        }
+    }
+
+    private RuntimePeerActionResult ApplyTerrain(TacticalActionRequest request)
+    {
+        if (!TryGetCell(request, out var x, out var y, out var error))
+        {
+            return new RuntimePeerActionResult(false, error!);
+        }
+
+        var terrainValue = (request.Value ?? "plain").Trim().ToLowerInvariant();
+        if (terrainValue is not ("plain" or "wall" or "difficult"))
+        {
+            return new RuntimePeerActionResult(false, "terrain value must be plain, wall, or difficult");
+        }
+
+        _tacticalState.Terrain[y][x] = terrainValue;
+        AddLocalEvent("tactical", "terrain", $"Set ({x},{y}) to {terrainValue}", null);
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
+    private RuntimePeerActionResult ApplyFog(TacticalActionRequest request)
+    {
+        if (!TryGetCell(request, out var x, out var y, out var error))
+        {
+            return new RuntimePeerActionResult(false, error!);
+        }
+
+        _tacticalState.Fog[y][x] = !_tacticalState.Fog[y][x];
+        AddLocalEvent("tactical", "fog", $"Toggled fog at ({x},{y})", null);
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
+    private RuntimePeerActionResult ApplyPing(TacticalActionRequest request)
+    {
+        if (!TryGetCell(request, out var x, out var y, out var error))
+        {
+            return new RuntimePeerActionResult(false, error!);
+        }
+
+        var ping = new TacticalPingDto(
+            Id: $"ping-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{x}-{y}",
+            X: x,
+            Y: y,
+            Label: string.IsNullOrWhiteSpace(request.Label) ? $"Ping {x},{y}" : request.Label.Trim()
+        );
+
+        _tacticalState.Pings.Insert(0, ping);
+        if (_tacticalState.Pings.Count > 40)
+        {
+            _tacticalState.Pings.RemoveRange(40, _tacticalState.Pings.Count - 40);
+        }
+
+        AddLocalEvent("tactical", "ping", $"Pinged sector ({x},{y})", null);
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
+    private RuntimePeerActionResult ApplyErase(TacticalActionRequest request)
+    {
+        if (!TryGetCell(request, out var x, out var y, out var error))
+        {
+            return new RuntimePeerActionResult(false, error!);
+        }
+
+        _tacticalState.Terrain[y][x] = "plain";
+        _tacticalState.Fog[y][x] = false;
+        _tacticalState.Tokens.RemoveAll(token => token.X == x && token.Y == y);
+        _tacticalState.Pings.RemoveAll(ping => ping.X == x && ping.Y == y);
+
+        AddLocalEvent("tactical", "erase", $"Cleared cell ({x},{y})", null);
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
+    private RuntimePeerActionResult ApplyTokenMove(TacticalActionRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.TokenId))
+        {
+            return new RuntimePeerActionResult(false, "tokenId is required");
+        }
+
+        if (!TryGetCell(request, out var x, out var y, out var error))
+        {
+            return new RuntimePeerActionResult(false, error!);
+        }
+
+        var index = _tacticalState.Tokens.FindIndex(token => string.Equals(token.Id, request.TokenId, StringComparison.Ordinal));
+        if (index < 0)
+        {
+            return new RuntimePeerActionResult(false, "token not found");
+        }
+
+        var token = _tacticalState.Tokens[index];
+        _tacticalState.Tokens[index] = token with { X = x, Y = y };
+        AddLocalEvent("tactical", "token-move", $"Moved {token.Name} to ({x},{y})", token.Id);
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
+    private RuntimePeerActionResult ApplyTokenAdd(TacticalActionRequest request)
+    {
+        var team = (request.Team ?? "blue").Trim().ToLowerInvariant();
+        if (team is not ("blue" or "red"))
+        {
+            return new RuntimePeerActionResult(false, "team must be blue or red");
+        }
+
+        var prefix = team == "blue" ? "A" : "R";
+        var counter = _tacticalState.Tokens.Count(token => string.Equals(token.Team, team, StringComparison.OrdinalIgnoreCase)) + 1;
+        var token = new TacticalTokenDto(
+            Id: $"{team}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}",
+            Name: $"{prefix}{counter}",
+            Team: team,
+            X: team == "blue" ? 1 : _tacticalState.Cols - 2,
+            Y: team == "blue" ? 1 : _tacticalState.Rows - 2,
+            Hp: 10
+        );
+
+        _tacticalState.Tokens.Add(token);
+        AddLocalEvent("tactical", "token-add", $"Added {token.Name} ({team})", token.Id);
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
+    private RuntimePeerActionResult ApplyAdvanceTurn()
+    {
+        _tacticalState = _tacticalState with { Turn = _tacticalState.Turn + 1 };
+        AddLocalEvent("tactical", "turn", "Advanced initiative turn", null);
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
+    private RuntimePeerActionResult ApplyReset()
+    {
+        _tacticalState = TacticalState.CreateDefault();
+        AddLocalEvent("tactical", "reset", "Board reset to baseline tactical state", null);
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
+    private bool TryGetCell(TacticalActionRequest request, out int x, out int y, out string? error)
+    {
+        x = request.X ?? -1;
+        y = request.Y ?? -1;
+
+        if (x < 0 || y < 0 || x >= _tacticalState.Cols || y >= _tacticalState.Rows)
+        {
+            error = "x and y must be valid board coordinates";
+            return false;
+        }
+
+        error = null;
+        return true;
+    }
+
+    private TacticalBoardStateResponse ToTacticalResponse(TacticalState state)
+    {
+        return new TacticalBoardStateResponse(
+            Rows: state.Rows,
+            Cols: state.Cols,
+            Terrain: state.Terrain.Select(row => (IReadOnlyList<string>)row.AsReadOnly()).ToArray(),
+            Fog: state.Fog.Select(row => (IReadOnlyList<bool>)row.AsReadOnly()).ToArray(),
+            Tokens: state.Tokens.ToArray(),
+            Pings: state.Pings.ToArray(),
+            Turn: state.Turn,
+            UpdatedAtUtc: state.UpdatedAtUtc
+        );
+    }
+
+    private void PersistTacticalState()
+    {
+        if (!EnsureEngine())
+        {
+            return;
+        }
+
+        if (!_peers.Values.Any(peer => peer.Online))
+        {
+            var bootstrap = ConnectPeer("alpha");
+            if (!bootstrap.IsSuccess)
+            {
+                AddLocalEvent("tactical", "persist-skip", "Unable to bootstrap runtime peer for tactical persistence", null);
+                return;
+            }
+        }
+
+        var value = JsonSerializer.SerializeToNode(new
+        {
+            rows = _tacticalState.Rows,
+            cols = _tacticalState.Cols,
+            terrain = _tacticalState.Terrain,
+            fog = _tacticalState.Fog,
+            tokens = _tacticalState.Tokens,
+            pings = _tacticalState.Pings,
+            turn = _tacticalState.Turn,
+            updatedAtUtc = _tacticalState.UpdatedAtUtc
+        }) ?? JsonValue.Create((string?)null)!;
+
+        var envelope = SerializeEnvelope(
+            DemoRoomId,
+            new JsonObject
+            {
+                ["MapSet"] = new JsonObject
+                {
+                    ["namespace"] = "tactical-strategy",
+                    ["key"] = "board-state-v1",
+                    ["value"] = value
+                }
+            }
+        );
+
+        var dispatch = DispatchCommand(envelope);
+        if (!dispatch.IsSuccess)
+        {
+            AddLocalEvent("tactical", "persist-failed", dispatch.Message, null);
         }
     }
 
@@ -413,6 +667,41 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         DateTimeOffset LastSeenUtc,
         int FrontierCount
     );
+
+    private sealed record TacticalState(
+        int Rows,
+        int Cols,
+        List<List<string>> Terrain,
+        List<List<bool>> Fog,
+        List<TacticalTokenDto> Tokens,
+        List<TacticalPingDto> Pings,
+        int Turn,
+        DateTimeOffset UpdatedAtUtc
+    )
+    {
+        public static TacticalState CreateDefault()
+        {
+            const int rows = 12;
+            const int cols = 16;
+
+            var terrain = Enumerable.Range(0, rows)
+                .Select(_ => Enumerable.Range(0, cols).Select(__ => "plain").ToList())
+                .ToList();
+            var fog = Enumerable.Range(0, rows)
+                .Select(_ => Enumerable.Range(0, cols).Select(__ => false).ToList())
+                .ToList();
+
+            var tokens = new List<TacticalTokenDto>
+            {
+                new("t-blue-1", "A1", "blue", 2, 2, 10),
+                new("t-blue-2", "A2", "blue", 3, 5, 8),
+                new("t-red-1", "R1", "red", 12, 8, 10),
+                new("t-red-2", "R2", "red", 10, 3, 7)
+            };
+
+            return new TacticalState(rows, cols, terrain, fog, tokens, [], 1, DateTimeOffset.UtcNow);
+        }
+    }
 
     public void Dispose()
     {

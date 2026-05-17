@@ -2,7 +2,10 @@ import type {
   HostHealthResponse,
   PeerActionResponse,
   ReplayEventsResponse,
-  ReplicationTopologyResponse
+  ReplicationTopologyResponse,
+  TacticalActionRequest,
+  TacticalActionResponse,
+  TacticalBoardState
 } from "../../../shared/contracts/runtime";
 
 const defaultBaseUrl = "http://localhost:5074";
@@ -54,4 +57,21 @@ export async function disconnectPeer(peerId: string): Promise<PeerActionResponse
     body: JSON.stringify({ peerId })
   });
   return parseResponse<PeerActionResponse>(response);
+}
+
+export async function fetchTacticalState(): Promise<TacticalBoardState> {
+  const response = await fetch(`${getBaseUrl()}/api/tactical/state`);
+  return parseResponse<TacticalBoardState>(response);
+}
+
+export async function applyTacticalAction(action: TacticalActionRequest): Promise<TacticalActionResponse> {
+  const response = await fetch(`${getBaseUrl()}/api/tactical/action`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(action)
+  });
+
+  return parseResponse<TacticalActionResponse>(response);
 }

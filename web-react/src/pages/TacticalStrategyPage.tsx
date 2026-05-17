@@ -1,25 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { applyTacticalAction, fetchTacticalState } from "../app/hostClient";
+import type { TacticalActionRequest, TacticalBoardState, TacticalToken } from "../../../shared/contracts/runtime";
 
 type TerrainType = "plain" | "wall" | "difficult";
 type ToolMode = "terrain" | "fog" | "token" | "ping" | "erase";
-
 type TokenTeam = "blue" | "red";
-
-interface TacticalToken {
-  id: string;
-  name: string;
-  team: TokenTeam;
-  x: number;
-  y: number;
-  hp: number;
-}
-
-interface TacticalPing {
-  id: string;
-  x: number;
-  y: number;
-  label: string;
-}
 
 interface TacticalOp {
   id: string;
@@ -32,33 +17,57 @@ const rows = 12;
 const cols = 16;
 const terrainPalette: TerrainType[] = ["plain", "wall", "difficult"];
 
-function buildTerrainGrid(fill: TerrainType): TerrainType[][] {
-  return Array.from({ length: rows }, () => Array.from({ length: cols }, () => fill));
-}
-
-function buildFogGrid(fill: boolean): boolean[][] {
-  return Array.from({ length: rows }, () => Array.from({ length: cols }, () => fill));
-}
-
-const initialTokens: TacticalToken[] = [
-  { id: "t-blue-1", name: "A1", team: "blue", x: 2, y: 2, hp: 10 },
-  { id: "t-blue-2", name: "A2", team: "blue", x: 3, y: 5, hp: 8 },
-  { id: "t-red-1", name: "R1", team: "red", x: 12, y: 8, hp: 10 },
-  { id: "t-red-2", name: "R2", team: "red", x: 10, y: 3, hp: 7 }
-];
+const fallbackState: TacticalBoardState = {
+  rows,
+  cols,
+  terrain: Array.from({ length: rows }, () => Array.from({ length: cols }, () => "plain")),
+  fog: Array.from({ length: rows }, () => Array.from({ length: cols }, () => false)),
+  tokens: [],
+  pings: [],
+  turn: 1,
+  updatedAtUtc: new Date().toISOString()
+};
 
 export function TacticalStrategyPage() {
-  const [terrain, setTerrain] = useState<TerrainType[][]>(() => buildTerrainGrid("plain"));
-  const [fog, setFog] = useState<boolean[][]>(() => buildFogGrid(false));
-  const [tokens, setTokens] = useState<TacticalToken[]>(initialTokens);
-  const [pings, setPings] = useState<TacticalPing[]>([]);
+  const [state, setState] = useState<TacticalBoardState>(fallbackState);
   const [tool, setTool] = useState<ToolMode>("terrain");
   const [selectedTerrain, setSelectedTerrain] = useState<TerrainType>("wall");
-  const [selectedTokenId, setSelectedTokenId] = useState<string | null>(initialTokens[0]?.id ?? null);
-  const [turn, setTurn] = useState(1);
+  const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
   const [ops, setOps] = useState<TacticalOp[]>([]);
+  const [hostError, setHostError] = useState<string | null>(null);
+  const [isBusy, setIsBusy] = useState(false);
 
-  const selectedToken = useMemo(() => tokens.find((token) => token.id === selectedTokenId) ?? null, [selectedTokenId, tokens]);
+  const selectedToken = useMemo(
+    () => state.tokens.find((token) => token.id === selectedTokenId) ?? null,
+    [selectedTokenId, state.tokens]
+  );
+
+  useEffect(() => {
+    let isCanceled = false;
+
+    async function loadState() {
+      try {
+        const snapshot = await fetchTacticalState();
+        if (!isCanceled) {
+          setState(snapshot);
+          setHostError(null);
+          if (snapshot.tokens.length > 0) {
+            setSelectedTokenId(snapshot.tokens[0].id);
+          }
+        }
+      } catch (error) {
+        if (!isCanceled) {
+          setHostError(error instanceof Error ? error.message : "Unable to load host tactical state");
+        }
+      }
+    }
+
+    void loadState();
+
+    return () => {
+      isCanceled = true;
+    };
+  }, []);
 
   function addOp(kind: string, detail: string) {
     const entry: TacticalOp = {
@@ -71,66 +80,46 @@ export function TacticalStrategyPage() {
     setOps((current) => [entry, ...current].slice(0, 80));
   }
 
+  async function dispatchAction(action: TacticalActionRequest, opKind: string, detail: string) {
+    setIsBusy(true);
+    try {
+      const result = await applyTacticalAction(action);
+      setState(result.state);
+      setHostError(result.ok ? null : result.message);
+      addOp(opKind, detail);
+    } catch (error) {
+      setHostError(error instanceof Error ? error.message : "Host tactical action failed");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   function clearBoard() {
-    setTerrain(buildTerrainGrid("plain"));
-    setFog(buildFogGrid(false));
-    setPings([]);
-    setOps([]);
-    setTurn(1);
-    addOp("reset", "Board reset to baseline tactical state");
+    void dispatchAction({ action: "reset" }, "reset", "Board reset to baseline tactical state");
   }
 
   function tokenAt(x: number, y: number): TacticalToken | undefined {
-    return tokens.find((token) => token.x === x && token.y === y);
+    return state.tokens.find((token) => token.x === x && token.y === y);
   }
 
   function applyCellAction(x: number, y: number) {
     if (tool === "terrain") {
-      setTerrain((current) => {
-        const next = current.map((row) => row.slice());
-        next[y][x] = selectedTerrain;
-        return next;
-      });
-      addOp("terrain", `Set (${x},${y}) to ${selectedTerrain}`);
+      void dispatchAction({ action: "terrain", x, y, value: selectedTerrain }, "terrain", `Set (${x},${y}) to ${selectedTerrain}`);
       return;
     }
 
     if (tool === "fog") {
-      setFog((current) => {
-        const next = current.map((row) => row.slice());
-        next[y][x] = !next[y][x];
-        return next;
-      });
-      addOp("fog", `Toggled fog at (${x},${y})`);
+      void dispatchAction({ action: "fog", x, y }, "fog", `Toggled fog at (${x},${y})`);
       return;
     }
 
     if (tool === "ping") {
-      const ping: TacticalPing = {
-        id: `${Date.now()}-${x}-${y}`,
-        x,
-        y,
-        label: `Ping ${x},${y}`
-      };
-      setPings((current) => [ping, ...current].slice(0, 25));
-      addOp("ping", `Pinged sector (${x},${y})`);
+      void dispatchAction({ action: "ping", x, y, label: `Ping ${x},${y}` }, "ping", `Pinged sector (${x},${y})`);
       return;
     }
 
     if (tool === "erase") {
-      setTerrain((current) => {
-        const next = current.map((row) => row.slice());
-        next[y][x] = "plain";
-        return next;
-      });
-      setFog((current) => {
-        const next = current.map((row) => row.slice());
-        next[y][x] = false;
-        return next;
-      });
-      setTokens((current) => current.filter((token) => !(token.x === x && token.y === y)));
-      setPings((current) => current.filter((ping) => !(ping.x === x && ping.y === y)));
-      addOp("erase", `Cleared cell (${x},${y})`);
+      void dispatchAction({ action: "erase", x, y }, "erase", `Cleared cell (${x},${y})`);
       return;
     }
 
@@ -146,39 +135,19 @@ export function TacticalStrategyPage() {
       return;
     }
 
-    setTokens((current) =>
-      current.map((token) =>
-        token.id === selectedTokenId
-          ? {
-              ...token,
-              x,
-              y
-            }
-          : token
-      )
+    void dispatchAction(
+      { action: "token-move", x, y, tokenId: selectedTokenId },
+      "token",
+      `Moved ${selectedToken?.name ?? selectedTokenId} to (${x},${y})`
     );
-    addOp("token", `Moved ${selectedToken?.name ?? selectedTokenId} to (${x},${y})`);
   }
 
   function addToken(team: TokenTeam) {
-    const id = `${team}-${Date.now()}`;
-    const name = team === "blue" ? `A${tokens.filter((token) => token.team === "blue").length + 1}` : `R${tokens.filter((token) => token.team === "red").length + 1}`;
-    const newToken: TacticalToken = {
-      id,
-      name,
-      team,
-      x: team === "blue" ? 1 : cols - 2,
-      y: team === "blue" ? 1 : rows - 2,
-      hp: 10
-    };
-    setTokens((current) => [...current, newToken]);
-    setSelectedTokenId(newToken.id);
-    addOp("token", `Added ${newToken.name} (${team})`);
+    void dispatchAction({ action: "token-add", team }, "token", `Added ${team} token`);
   }
 
   function advanceTurn() {
-    setTurn((current) => current + 1);
-    addOp("turn", "Advanced initiative turn");
+    void dispatchAction({ action: "advance-turn" }, "turn", "Advanced initiative turn");
   }
 
   return (
@@ -195,6 +164,7 @@ export function TacticalStrategyPage() {
       <div className="tactical-layout">
         <article className="feature-panel tactical-board-panel">
           <div className="tactical-toolbar">
+            {hostError && <p className="error-text">Host sync error: {hostError}</p>}
             <div className="tool-group">
               <span>Tool</span>
               <div className="action-row">
@@ -229,7 +199,7 @@ export function TacticalStrategyPage() {
 
             <div className="action-row">
               <button type="button" className="action-btn tactical-btn" onClick={advanceTurn}>
-                Advance Turn ({turn})
+                Advance Turn ({state.turn})
               </button>
               <button type="button" className="action-btn tactical-btn" onClick={clearBoard}>
                 Reset Board
@@ -237,13 +207,13 @@ export function TacticalStrategyPage() {
             </div>
           </div>
 
-          <div className="tactical-grid" style={{ gridTemplateColumns: `repeat(${cols}, minmax(24px, 1fr))` }}>
-            {Array.from({ length: rows }).flatMap((_, y) =>
-              Array.from({ length: cols }).map((__, x) => {
+          <div className="tactical-grid" style={{ gridTemplateColumns: `repeat(${state.cols}, minmax(24px, 1fr))` }}>
+            {Array.from({ length: state.rows }).flatMap((_, y) =>
+              Array.from({ length: state.cols }).map((__, x) => {
                 const occupant = tokenAt(x, y);
-                const terrainType = terrain[y][x];
-                const isFogged = fog[y][x];
-                const hasPing = pings.some((ping) => ping.x === x && ping.y === y);
+                const terrainType = state.terrain[y][x];
+                const isFogged = state.fog[y][x];
+                const hasPing = state.pings.some((ping) => ping.x === x && ping.y === y);
                 const terrainClass = `terrain-${terrainType}`;
 
                 return (
@@ -253,6 +223,7 @@ export function TacticalStrategyPage() {
                     className={`tactical-cell ${terrainClass} ${isFogged ? "is-fogged" : ""} ${hasPing ? "has-ping" : ""}`}
                     onClick={() => applyCellAction(x, y)}
                     title={`x:${x} y:${y}`}
+                    disabled={isBusy}
                   >
                     {occupant ? <span className={`token-chip team-${occupant.team}`}>{occupant.name}</span> : null}
                   </button>
@@ -265,7 +236,7 @@ export function TacticalStrategyPage() {
         <aside className="telemetry-panel tactical-side-panel">
           <h2>Units</h2>
           <div className="token-list">
-            {tokens.map((token) => (
+            {state.tokens.map((token) => (
               <button
                 key={token.id}
                 type="button"
