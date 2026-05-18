@@ -1,17 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
-import { applyTacticalAction, fetchTacticalState } from "../app/hostClient";
-import type { TacticalActionRequest, TacticalBoardState, TacticalToken } from "../../../shared/contracts/runtime";
+import { useEffect, useState } from "react";
+import { applyTacticalAction, fetchReplicationEvents, fetchTacticalState } from "../app/hostClient";
+import type { ReplayEventItem, TacticalActionRequest, TacticalBoardState, TacticalToken } from "../../../shared/contracts/runtime";
 
 type TerrainType = "plain" | "wall" | "difficult";
 type ToolMode = "terrain" | "fog" | "token" | "ping" | "erase";
 type TokenTeam = "blue" | "red";
-
-interface TacticalOp {
-  id: string;
-  at: string;
-  kind: string;
-  detail: string;
-}
 
 const rows = 12;
 const cols = 16;
@@ -33,24 +26,27 @@ export function TacticalStrategyPage() {
   const [tool, setTool] = useState<ToolMode>("terrain");
   const [selectedTerrain, setSelectedTerrain] = useState<TerrainType>("wall");
   const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
-  const [ops, setOps] = useState<TacticalOp[]>([]);
+  const [replayOps, setReplayOps] = useState<ReplayEventItem[]>([]);
   const [hostError, setHostError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
 
-  const selectedToken = useMemo(
-    () => state.tokens.find((token) => token.id === selectedTokenId) ?? null,
-    [selectedTokenId, state.tokens]
-  );
+  async function refreshReplayEvents() {
+    const replay = await fetchReplicationEvents(80);
+    const tacticalEvents = replay.events.filter((event) => event.stream === "tactical" || event.stream === "command");
+    setReplayOps(tacticalEvents);
+  }
 
   useEffect(() => {
     let isCanceled = false;
 
     async function loadState() {
       try {
-        const snapshot = await fetchTacticalState();
+        const [snapshot, replay] = await Promise.all([fetchTacticalState(), fetchReplicationEvents(80)]);
         if (!isCanceled) {
           setState(snapshot);
           setHostError(null);
+          const tacticalEvents = replay.events.filter((event) => event.stream === "tactical" || event.stream === "command");
+          setReplayOps(tacticalEvents);
           if (snapshot.tokens.length > 0) {
             setSelectedTokenId(snapshot.tokens[0].id);
           }
@@ -63,30 +59,23 @@ export function TacticalStrategyPage() {
     }
 
     void loadState();
+    const intervalId = window.setInterval(() => {
+      void loadState();
+    }, 3500);
 
     return () => {
       isCanceled = true;
+      window.clearInterval(intervalId);
     };
   }, []);
 
-  function addOp(kind: string, detail: string) {
-    const entry: TacticalOp = {
-      id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-      at: new Date().toLocaleTimeString(),
-      kind,
-      detail
-    };
-
-    setOps((current) => [entry, ...current].slice(0, 80));
-  }
-
-  async function dispatchAction(action: TacticalActionRequest, opKind: string, detail: string) {
+  async function dispatchAction(action: TacticalActionRequest) {
     setIsBusy(true);
     try {
       const result = await applyTacticalAction(action);
       setState(result.state);
       setHostError(result.ok ? null : result.message);
-      addOp(opKind, detail);
+      await refreshReplayEvents();
     } catch (error) {
       setHostError(error instanceof Error ? error.message : "Host tactical action failed");
     } finally {
@@ -95,7 +84,7 @@ export function TacticalStrategyPage() {
   }
 
   function clearBoard() {
-    void dispatchAction({ action: "reset" }, "reset", "Board reset to baseline tactical state");
+    void dispatchAction({ action: "reset" });
   }
 
   function tokenAt(x: number, y: number): TacticalToken | undefined {
@@ -104,50 +93,45 @@ export function TacticalStrategyPage() {
 
   function applyCellAction(x: number, y: number) {
     if (tool === "terrain") {
-      void dispatchAction({ action: "terrain", x, y, value: selectedTerrain }, "terrain", `Set (${x},${y}) to ${selectedTerrain}`);
+      void dispatchAction({ action: "terrain", x, y, value: selectedTerrain });
       return;
     }
 
     if (tool === "fog") {
-      void dispatchAction({ action: "fog", x, y }, "fog", `Toggled fog at (${x},${y})`);
+      void dispatchAction({ action: "fog", x, y });
       return;
     }
 
     if (tool === "ping") {
-      void dispatchAction({ action: "ping", x, y, label: `Ping ${x},${y}` }, "ping", `Pinged sector (${x},${y})`);
+      void dispatchAction({ action: "ping", x, y, label: `Ping ${x},${y}` });
       return;
     }
 
     if (tool === "erase") {
-      void dispatchAction({ action: "erase", x, y }, "erase", `Cleared cell (${x},${y})`);
+      void dispatchAction({ action: "erase", x, y });
       return;
     }
 
     const occupant = tokenAt(x, y);
     if (occupant) {
       setSelectedTokenId(occupant.id);
-      addOp("token", `Selected ${occupant.name} at (${x},${y})`);
       return;
     }
 
     if (!selectedTokenId) {
-      addOp("token", "No token selected for movement");
+      setHostError("No token selected for movement");
       return;
     }
 
-    void dispatchAction(
-      { action: "token-move", x, y, tokenId: selectedTokenId },
-      "token",
-      `Moved ${selectedToken?.name ?? selectedTokenId} to (${x},${y})`
-    );
+    void dispatchAction({ action: "token-move", x, y, tokenId: selectedTokenId });
   }
 
   function addToken(team: TokenTeam) {
-    void dispatchAction({ action: "token-add", team }, "token", `Added ${team} token`);
+    void dispatchAction({ action: "token-add", team });
   }
 
   function advanceTurn() {
-    void dispatchAction({ action: "advance-turn" }, "turn", "Advanced initiative turn");
+    void dispatchAction({ action: "advance-turn" });
   }
 
   return (
@@ -156,7 +140,7 @@ export function TacticalStrategyPage() {
         <p className="hero-tag">MODE</p>
         <h1>Tactical Strategy Vertical Slice</h1>
         <p>
-          Collaborative battle-planning sandbox with editable terrain, fog-of-war, synchronized token-style entities, and a replay-friendly local
+          Collaborative battle-planning sandbox with editable terrain, fog-of-war, synchronized token-style entities, and a replay-friendly runtime
           operation timeline.
         </p>
       </header>
@@ -262,15 +246,15 @@ export function TacticalStrategyPage() {
 
           <h2>Operation Timeline</h2>
           <ul className="ops-list">
-            {ops.map((op) => (
-              <li key={op.id}>
+            {replayOps.map((op, index) => (
+              <li key={`${op.timestampUtc}-${op.type}-${index}`}>
                 <span className="ops-meta">
-                  {op.at} [{op.kind}]
+                  {new Date(op.timestampUtc).toLocaleTimeString()} [{op.stream}:{op.type}]
                 </span>
-                <span>{op.detail}</span>
+                <span>{op.message}</span>
               </li>
             ))}
-            {ops.length === 0 ? <li className="ops-empty">No operations yet. Start editing the board.</li> : null}
+            {replayOps.length === 0 ? <li className="ops-empty">No runtime events yet. Start editing the board.</li> : null}
           </ul>
         </aside>
       </div>
