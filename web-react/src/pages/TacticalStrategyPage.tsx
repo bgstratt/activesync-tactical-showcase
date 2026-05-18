@@ -33,7 +33,8 @@ const fallbackState: TacticalBoardState = {
   turn: 1,
   partitionedPeers: [],
   queuedOps: [],
-  updatedAtUtc: new Date().toISOString()
+  updatedAtUtc: new Date().toISOString(),
+  triggerLinks: []
 };
 
 export function TacticalStrategyPage() {
@@ -428,3 +429,5 @@ export function TacticalStrategyPage() {
     </section>
   );
 }
+
+

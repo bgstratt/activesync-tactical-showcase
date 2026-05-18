@@ -479,6 +479,22 @@ body {
   background: linear-gradient(160deg, #809569, #5f7d57);
 }
 
+.terrain-room {
+  background: linear-gradient(145deg, #dfd4bd, #cfc2a8);
+}
+
+.terrain-door {
+  background: linear-gradient(145deg, #b68651, #915f31);
+}
+
+.terrain-trap {
+  background: linear-gradient(145deg, #7d1f1f, #561616);
+}
+
+.terrain-loot {
+  background: linear-gradient(145deg, #d2b13f, #b1891f);
+}
+
 .tactical-cell.is-fogged::after {
   content: "";
   position: absolute;
@@ -493,6 +509,11 @@ body {
   border-radius: 999px;
   border: 2px solid rgba(237, 111, 70, 0.92);
   box-shadow: 0 0 0 2px rgba(237, 111, 70, 0.25);
+}
+
+.tactical-cell.is-link-start {
+  outline: 2px solid rgba(37, 99, 235, 0.78);
+  outline-offset: -2px;
 }
 
 .token-chip {

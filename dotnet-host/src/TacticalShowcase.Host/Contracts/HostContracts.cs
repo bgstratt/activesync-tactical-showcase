@@ -69,6 +69,15 @@ public sealed record TacticalPingDto(
     string Label
 );
 
+public sealed record TacticalTriggerLinkDto(
+    string Id,
+    int FromX,
+    int FromY,
+    int ToX,
+    int ToY,
+    string Label
+);
+
 public sealed record TacticalBoardStateResponse(
     int Rows,
     int Cols,
@@ -76,6 +85,7 @@ public sealed record TacticalBoardStateResponse(
     IReadOnlyList<IReadOnlyList<bool>> Fog,
     IReadOnlyList<TacticalTokenDto> Tokens,
     IReadOnlyList<TacticalPingDto> Pings,
+    IReadOnlyList<TacticalTriggerLinkDto> TriggerLinks,
     int Turn,
     IReadOnlyList<string> PartitionedPeers,
     IReadOnlyList<PeerQueueDepthDto> QueuedOps,
@@ -94,6 +104,8 @@ public sealed record TacticalActionRequest(
     string? Label,
     string? ActorPeerId,
     string? TargetPeerId,
+    int? TargetX,
+    int? TargetY,
     bool? Enabled
 );
 

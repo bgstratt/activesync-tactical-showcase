@@ -68,6 +68,15 @@ export interface TacticalPing {
   label: string;
 }
 
+export interface TacticalTriggerLink {
+  id: string;
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  label: string;
+}
+
 export interface TacticalBoardState {
   rows: number;
   cols: number;
@@ -75,6 +84,7 @@ export interface TacticalBoardState {
   fog: boolean[][];
   tokens: TacticalToken[];
   pings: TacticalPing[];
+  triggerLinks: TacticalTriggerLink[];
   turn: number;
   partitionedPeers: string[];
   queuedOps: Array<{
@@ -94,6 +104,8 @@ export interface TacticalActionRequest {
   label?: string;
   actorPeerId?: string;
   targetPeerId?: string;
+  targetX?: number;
+  targetY?: number;
   enabled?: boolean;
 }
 

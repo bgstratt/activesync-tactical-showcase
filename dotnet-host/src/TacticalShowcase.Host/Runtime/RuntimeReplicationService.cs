@@ -221,6 +221,8 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
                 "terrain" => ApplyTerrain(request, actorPeerId),
                 "fog" => ApplyFog(request, actorPeerId),
                 "ping" => ApplyPing(request, actorPeerId),
+                "link-trigger" => ApplyLinkTrigger(request, actorPeerId),
+                "unlink-trigger" => ApplyUnlinkTrigger(request, actorPeerId),
                 "erase" => ApplyErase(request, actorPeerId),
                 "token-move" => ApplyTokenMove(request, actorPeerId),
                 "token-add" => ApplyTokenAdd(request, actorPeerId),
@@ -276,6 +278,8 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
                 "terrain" => ApplyTerrain(queued, peerId),
                 "fog" => ApplyFog(queued, peerId),
                 "ping" => ApplyPing(queued, peerId),
+                "link-trigger" => ApplyLinkTrigger(queued, peerId),
+                "unlink-trigger" => ApplyUnlinkTrigger(queued, peerId),
                 "erase" => ApplyErase(queued, peerId),
                 "token-move" => ApplyTokenMove(queued, peerId),
                 "token-add" => ApplyTokenAdd(queued, peerId),
@@ -391,6 +395,46 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         return new RuntimePeerActionResult(true, "ok");
     }
 
+    private RuntimePeerActionResult ApplyLinkTrigger(TacticalActionRequest request, string actorPeerId)
+    {
+        if (!TryGetCell(request, out var fromX, out var fromY, out var error))
+        {
+            return new RuntimePeerActionResult(false, error!);
+        }
+
+        var toX = request.TargetX;
+        var toY = request.TargetY;
+        if (toX is null || toY is null || toX < 0 || toY < 0 || toX >= _tacticalState.Cols || toY >= _tacticalState.Rows)
+        {
+            return new RuntimePeerActionResult(false, "targetX and targetY must be valid board coordinates");
+        }
+
+        var link = new TacticalTriggerLinkDto(
+            Id: $"link-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{fromX}-{fromY}-{toX}-{toY}",
+            FromX: fromX,
+            FromY: fromY,
+            ToX: toX.Value,
+            ToY: toY.Value,
+            Label: string.IsNullOrWhiteSpace(request.Label) ? "trigger" : request.Label.Trim()
+        );
+
+        _tacticalState.TriggerLinks.Add(link);
+        AddLocalEvent("tactical", "link-trigger", $"Linked trigger ({fromX},{fromY}) -> ({toX},{toY})", actorPeerId);
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
+    private RuntimePeerActionResult ApplyUnlinkTrigger(TacticalActionRequest request, string actorPeerId)
+    {
+        if (!TryGetCell(request, out var fromX, out var fromY, out var error))
+        {
+            return new RuntimePeerActionResult(false, error!);
+        }
+
+        var removed = _tacticalState.TriggerLinks.RemoveAll(link => link.FromX == fromX && link.FromY == fromY);
+        AddLocalEvent("tactical", "unlink-trigger", $"Removed {removed} trigger link(s) from ({fromX},{fromY})", actorPeerId);
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
     private RuntimePeerActionResult ApplyErase(TacticalActionRequest request, string actorPeerId)
     {
         if (!TryGetCell(request, out var x, out var y, out var error))
@@ -402,6 +446,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         _tacticalState.Fog[y][x] = false;
         _tacticalState.Tokens.RemoveAll(token => token.X == x && token.Y == y);
         _tacticalState.Pings.RemoveAll(ping => ping.X == x && ping.Y == y);
+        _tacticalState.TriggerLinks.RemoveAll(link => link.FromX == x && link.FromY == y || link.ToX == x && link.ToY == y);
 
         AddLocalEvent("tactical", "erase", $"Cleared cell ({x},{y})", actorPeerId);
         return new RuntimePeerActionResult(true, "ok");
@@ -493,6 +538,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
             Fog: state.Fog.Select(row => (IReadOnlyList<bool>)row.AsReadOnly()).ToArray(),
             Tokens: state.Tokens.ToArray(),
             Pings: state.Pings.ToArray(),
+            TriggerLinks: state.TriggerLinks.ToArray(),
             Turn: state.Turn,
             PartitionedPeers: _partitionedPeers.OrderBy(peer => peer, StringComparer.OrdinalIgnoreCase).ToArray(),
             QueuedOps: _queuedActionsByPeer
@@ -529,6 +575,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
             fog = _tacticalState.Fog,
             tokens = _tacticalState.Tokens,
             pings = _tacticalState.Pings,
+            triggerLinks = _tacticalState.TriggerLinks,
             turn = _tacticalState.Turn,
             updatedAtUtc = _tacticalState.UpdatedAtUtc
         }) ?? JsonValue.Create((string?)null)!;
@@ -777,6 +824,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         List<List<bool>> Fog,
         List<TacticalTokenDto> Tokens,
         List<TacticalPingDto> Pings,
+        List<TacticalTriggerLinkDto> TriggerLinks,
         int Turn,
         DateTimeOffset UpdatedAtUtc
     )
@@ -801,7 +849,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
                 new("t-red-2", "R2", "red", 10, 3, 7)
             };
 
-            return new TacticalState(rows, cols, terrain, fog, tokens, [], 1, DateTimeOffset.UtcNow);
+            return new TacticalState(rows, cols, terrain, fog, tokens, [], [], 1, DateTimeOffset.UtcNow);
         }
     }
 
