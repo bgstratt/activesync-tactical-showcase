@@ -219,6 +219,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
             var result = action switch
             {
                 "terrain" => ApplyTerrain(request, actorPeerId),
+                "terrain-batch" => ApplyTerrainBatch(request, actorPeerId),
                 "fog" => ApplyFog(request, actorPeerId),
                 "ping" => ApplyPing(request, actorPeerId),
                 "link-trigger" => ApplyLinkTrigger(request, actorPeerId),
@@ -276,6 +277,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
             var result = action switch
             {
                 "terrain" => ApplyTerrain(queued, peerId),
+                "terrain-batch" => ApplyTerrainBatch(queued, peerId),
                 "fog" => ApplyFog(queued, peerId),
                 "ping" => ApplyPing(queued, peerId),
                 "link-trigger" => ApplyLinkTrigger(queued, peerId),
@@ -356,6 +358,48 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
 
         _tacticalState.Terrain[y][x] = terrainValue;
         AddLocalEvent("tactical", "terrain", $"Set ({x},{y}) to {terrainValue}", actorPeerId);
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
+    private RuntimePeerActionResult ApplyTerrainBatch(TacticalActionRequest request, string actorPeerId)
+    {
+        var terrainValue = (request.Value ?? "plain").Trim().ToLowerInvariant();
+        if (terrainValue is not ("plain" or "wall" or "difficult"))
+        {
+            return new RuntimePeerActionResult(false, "terrain value must be plain, wall, or difficult");
+        }
+
+        if (request.Cells is null || request.Cells.Count == 0)
+        {
+            return new RuntimePeerActionResult(false, "cells is required for terrain-batch");
+        }
+
+        if (request.Cells.Count > 1024)
+        {
+            return new RuntimePeerActionResult(false, "terrain-batch supports up to 1024 cells per request");
+        }
+
+        var applied = 0;
+        var skipped = 0;
+        foreach (var cell in request.Cells)
+        {
+            if (cell.X < 0 || cell.Y < 0 || cell.X >= _tacticalState.Cols || cell.Y >= _tacticalState.Rows)
+            {
+                skipped += 1;
+                continue;
+            }
+
+            _tacticalState.Terrain[cell.Y][cell.X] = terrainValue;
+            applied += 1;
+        }
+
+        if (applied == 0)
+        {
+            return new RuntimePeerActionResult(false, "terrain-batch had no valid cells to apply");
+        }
+
+        var suffix = skipped > 0 ? $", skipped {skipped} invalid" : string.Empty;
+        AddLocalEvent("tactical", "terrain-batch", $"Applied {applied} cell write(s) as {terrainValue}{suffix}", actorPeerId);
         return new RuntimePeerActionResult(true, "ok");
     }
 

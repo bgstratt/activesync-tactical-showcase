@@ -107,15 +107,12 @@ export function PixelSandboxPage() {
       }
     }
 
-    for (const cell of writes) {
-      await applyTacticalAction({
-        action: "terrain",
-        actorPeerId: activePeerId,
-        x: cell.x,
-        y: cell.y,
-        value: brush
-      });
-    }
+    await applyTacticalAction({
+      action: "terrain-batch",
+      actorPeerId: activePeerId,
+      value: brush,
+      cells: writes
+    });
   }
 
   async function runBurst() {
@@ -123,25 +120,27 @@ export function PixelSandboxPage() {
     setBurstSummary(null);
 
     const start = performance.now();
-    let writes = 0;
+    let writeCount = 0;
 
     try {
+      const batchWrites: Array<{ x: number; y: number }> = [];
       for (let i = 0; i < burstOps; i += 1) {
         const x = Math.floor(Math.random() * state.cols);
         const y = Math.floor(Math.random() * state.rows);
-        await applyTacticalAction({
-          action: "terrain",
-          actorPeerId: activePeerId,
-          x,
-          y,
-          value: brush
-        });
-        writes += 1;
+        batchWrites.push({ x, y });
       }
 
+      await applyTacticalAction({
+        action: "terrain-batch",
+        actorPeerId: activePeerId,
+        value: brush,
+        cells: batchWrites
+      });
+      writeCount = batchWrites.length;
+
       const elapsed = performance.now() - start;
-      const opsPerSec = elapsed <= 0 ? writes : Math.round((writes / elapsed) * 1000);
-      setBurstSummary(`Burst complete: ${writes} writes in ${Math.round(elapsed)} ms (${opsPerSec} ops/s)`);
+      const opsPerSec = elapsed <= 0 ? writeCount : Math.round((writeCount / elapsed) * 1000);
+      setBurstSummary(`Burst complete: ${writeCount} writes in ${Math.round(elapsed)} ms (${opsPerSec} ops/s)`);
     } catch (error) {
       setHostError(error instanceof Error ? error.message : "Burst failed");
     } finally {

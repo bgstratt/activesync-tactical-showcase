@@ -94,6 +94,11 @@ export interface TacticalBoardState {
   updatedAtUtc: string;
 }
 
+export interface TacticalCellWrite {
+  x: number;
+  y: number;
+}
+
 export interface TacticalActionRequest {
   action: string;
   x?: number;
@@ -107,6 +112,7 @@ export interface TacticalActionRequest {
   targetX?: number;
   targetY?: number;
   enabled?: boolean;
+  cells?: TacticalCellWrite[];
 }
 
 export interface TacticalActionResponse {

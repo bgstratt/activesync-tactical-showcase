@@ -94,6 +94,8 @@ public sealed record TacticalBoardStateResponse(
 
 public sealed record PeerQueueDepthDto(string PeerId, int Count);
 
+public sealed record TacticalCellWriteDto(int X, int Y);
+
 public sealed record TacticalActionRequest(
     string Action,
     int? X,
@@ -106,7 +108,8 @@ public sealed record TacticalActionRequest(
     string? TargetPeerId,
     int? TargetX,
     int? TargetY,
-    bool? Enabled
+    bool? Enabled,
+    IReadOnlyList<TacticalCellWriteDto>? Cells
 );
 
 public sealed record TacticalActionResponse(bool Ok, string Message, TacticalBoardStateResponse State);
