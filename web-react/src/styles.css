@@ -642,6 +642,63 @@ body {
   gap: 0.2rem;
 }
 
+.benchmark-box {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.66);
+  padding: 0.5rem 0.6rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.benchmark-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem;
+}
+
+.benchmark-grid div {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 0.35rem 0.45rem;
+  background: rgba(255, 255, 255, 0.72);
+  display: grid;
+  gap: 0.12rem;
+}
+
+.benchmark-grid strong {
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.7rem;
+}
+
+.benchmark-grid span {
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.benchmark-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.3rem;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.benchmark-list li {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.68);
+  padding: 0.32rem 0.42rem;
+  display: grid;
+  gap: 0.1rem;
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+}
+
 .ops-list {
   margin: 0;
   padding: 0;

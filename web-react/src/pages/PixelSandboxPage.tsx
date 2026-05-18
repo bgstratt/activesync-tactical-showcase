@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   applyTacticalAction,
   connectPeer,
@@ -9,6 +9,21 @@ import {
 import type { PeerStatus, ReplayEventItem, TacticalBoardState } from "../../../shared/contracts/runtime";
 
 type PixelBrush = "plain" | "wall" | "difficult";
+
+interface BurstSample {
+  id: number;
+  timestampUtc: string;
+  latencyMs: number;
+  writeCount: number;
+  opsPerSec: number;
+  queueDrainMs: number | null;
+}
+
+interface PendingDrainMeasurement {
+  sampleId: number;
+  baselineQueueDepth: number;
+  startedAtMs: number;
+}
 
 const rows = 12;
 const cols = 16;
@@ -38,8 +53,20 @@ export function PixelSandboxPage() {
   const [runningBurst, setRunningBurst] = useState(false);
   const [burstSummary, setBurstSummary] = useState<string | null>(null);
   const [hostError, setHostError] = useState<string | null>(null);
+  const [burstSamples, setBurstSamples] = useState<BurstSample[]>([]);
+  const [pendingDrain, setPendingDrain] = useState<PendingDrainMeasurement | null>(null);
+  const nextSampleId = useRef(1);
 
   const queueDepth = useMemo(() => state.queuedOps.reduce((sum, item) => sum + item.count, 0), [state.queuedOps]);
+
+  const latencyP50 = useMemo(() => percentile(burstSamples.map((item) => item.latencyMs), 50), [burstSamples]);
+  const latencyP95 = useMemo(() => percentile(burstSamples.map((item) => item.latencyMs), 95), [burstSamples]);
+  const drainSamples = useMemo(
+    () => burstSamples.filter((sample) => sample.queueDrainMs !== null).map((sample) => sample.queueDrainMs as number),
+    [burstSamples]
+  );
+  const drainP50 = useMemo(() => percentile(drainSamples, 50), [drainSamples]);
+  const drainP95 = useMemo(() => percentile(drainSamples, 95), [drainSamples]);
 
   useEffect(() => {
     let isCanceled = false;
@@ -55,11 +82,20 @@ export function PixelSandboxPage() {
         if (!isCanceled) {
           setState(snapshot);
           setPeers(topology.peers);
+          const nextQueueDepth = snapshot.queuedOps.reduce((sum, item) => sum + item.count, 0);
           const filtered = replay.events.filter(
             (event) => event.stream === "tactical" || event.type === "queued" || event.type === "replay"
           );
           setEvents(filtered);
           setHostError(null);
+
+          if (pendingDrain && nextQueueDepth <= pendingDrain.baselineQueueDepth) {
+            const drainMs = Math.round(performance.now() - pendingDrain.startedAtMs);
+            setBurstSamples((previous) =>
+              previous.map((entry) => (entry.id === pendingDrain.sampleId ? { ...entry, queueDrainMs: drainMs } : entry))
+            );
+            setPendingDrain(null);
+          }
 
           if (topology.peers.length > 0 && !topology.peers.some((peer) => peer.peerId === activePeerId)) {
             setActivePeerId(topology.peers[0].peerId);
@@ -81,7 +117,7 @@ export function PixelSandboxPage() {
       isCanceled = true;
       window.clearInterval(intervalId);
     };
-  }, [activePeerId]);
+  }, [activePeerId, pendingDrain]);
 
   function terrainClass(value: string): string {
     if (value === "wall") {
@@ -130,16 +166,41 @@ export function PixelSandboxPage() {
         batchWrites.push({ x, y });
       }
 
-      await applyTacticalAction({
+      const baselineQueueDepth = queueDepth;
+      const response = await applyTacticalAction({
         action: "terrain-batch",
         actorPeerId: activePeerId,
         value: brush,
         cells: batchWrites
       });
+      setState(response.state);
       writeCount = batchWrites.length;
 
       const elapsed = performance.now() - start;
       const opsPerSec = elapsed <= 0 ? writeCount : Math.round((writeCount / elapsed) * 1000);
+
+      const sampleId = nextSampleId.current;
+      nextSampleId.current += 1;
+      const afterSubmitQueueDepth = response.state.queuedOps.reduce((sum, item) => sum + item.count, 0);
+      const shouldMeasureDrain = afterSubmitQueueDepth > baselineQueueDepth;
+      const sample: BurstSample = {
+        id: sampleId,
+        timestampUtc: new Date().toISOString(),
+        latencyMs: Math.round(elapsed),
+        writeCount,
+        opsPerSec,
+        queueDrainMs: shouldMeasureDrain ? null : 0
+      };
+
+      setBurstSamples((previous) => [sample, ...previous].slice(0, 20));
+      if (shouldMeasureDrain) {
+        setPendingDrain({
+          sampleId,
+          baselineQueueDepth,
+          startedAtMs: performance.now()
+        });
+      }
+
       setBurstSummary(`Burst complete: ${writeCount} writes in ${Math.round(elapsed)} ms (${opsPerSec} ops/s)`);
     } catch (error) {
       setHostError(error instanceof Error ? error.message : "Burst failed");
@@ -302,6 +363,40 @@ export function PixelSandboxPage() {
             </ul>
           </div>
 
+          <h2>Burst Benchmark</h2>
+          <div className="benchmark-box">
+            <div className="benchmark-grid">
+              <div>
+                <strong>Latency p50</strong>
+                <span>{latencyP50 === null ? "n/a" : `${latencyP50} ms`}</span>
+              </div>
+              <div>
+                <strong>Latency p95</strong>
+                <span>{latencyP95 === null ? "n/a" : `${latencyP95} ms`}</span>
+              </div>
+              <div>
+                <strong>Drain p50</strong>
+                <span>{drainP50 === null ? "n/a" : `${drainP50} ms`}</span>
+              </div>
+              <div>
+                <strong>Drain p95</strong>
+                <span>{drainP95 === null ? "n/a" : `${drainP95} ms`}</span>
+              </div>
+            </div>
+            <ul className="benchmark-list">
+              {burstSamples.map((sample) => (
+                <li key={sample.id}>
+                  <span>{new Date(sample.timestampUtc).toLocaleTimeString()}</span>
+                  <span>
+                    {sample.writeCount} ops, {sample.latencyMs} ms, {sample.opsPerSec} ops/s, drain{" "}
+                    {sample.queueDrainMs === null ? "pending" : `${sample.queueDrainMs} ms`}
+                  </span>
+                </li>
+              ))}
+              {burstSamples.length === 0 ? <li>No burst samples yet.</li> : null}
+            </ul>
+          </div>
+
           <h2>Stress Timeline</h2>
           <ul className="ops-list">
             {events.map((event, index) => (
@@ -319,4 +414,15 @@ export function PixelSandboxPage() {
       </div>
     </section>
   );
+}
+
+function percentile(values: number[], p: number): number | null {
+  if (values.length === 0) {
+    return null;
+  }
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.ceil((p / 100) * sorted.length) - 1;
+  const bounded = Math.max(0, Math.min(sorted.length - 1, idx));
+  return sorted[bounded];
 }
