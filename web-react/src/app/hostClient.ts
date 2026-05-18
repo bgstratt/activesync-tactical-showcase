@@ -35,8 +35,22 @@ export async function fetchReplicationTopology(): Promise<ReplicationTopologyRes
   return parseResponse<ReplicationTopologyResponse>(response);
 }
 
-export async function fetchReplicationEvents(take = 60): Promise<ReplayEventsResponse> {
-  const response = await fetch(`${getBaseUrl()}/api/replication/events?take=${take}`);
+export async function fetchReplicationEvents(
+  take = 60,
+  viewerPeerId?: string,
+  perspective?: CardBattlePerspective
+): Promise<ReplayEventsResponse> {
+  const search = new URLSearchParams();
+  search.set("take", String(take));
+  if (viewerPeerId) {
+    search.set("viewerPeerId", viewerPeerId);
+  }
+
+  if (perspective && perspective !== "auto") {
+    search.set("perspective", perspective);
+  }
+
+  const response = await fetch(`${getBaseUrl()}/api/replication/events?${search.toString()}`);
   return parseResponse<ReplayEventsResponse>(response);
 }
 

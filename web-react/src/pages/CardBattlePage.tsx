@@ -61,7 +61,7 @@ export function CardBattlePage() {
       try {
         const [snapshot, replay, topology] = await Promise.all([
           fetchCardBattleState(activePeerId, perspective),
-          fetchReplicationEvents(120),
+          fetchReplicationEvents(120, activePeerId, perspective),
           fetchReplicationTopology()
         ]);
 
@@ -355,7 +355,7 @@ export function CardBattlePage() {
                 <span className="ops-meta">
                   {new Date(event.timestampUtc).toLocaleTimeString()} [{event.stream}:{event.type}]
                 </span>
-                <span>{projectEventMessage(event, viewerTeam)}</span>
+                <span>{event.message}</span>
                 {event.peerId ? <span className="replay-peer">peer: {event.peerId}</span> : null}
               </li>
             ))}
@@ -365,22 +365,4 @@ export function CardBattlePage() {
       </div>
     </section>
   );
-}
-
-function projectEventMessage(event: ReplayEventItem, viewerTeam: ViewerTeam): string {
-  if (event.stream !== "card-battle" || event.type !== "draw") {
-    return event.message;
-  }
-
-  const match = event.message.match(/^(blue|red)\s+drew\s+.+$/i);
-  if (!match) {
-    return event.message;
-  }
-
-  const drawTeam = match[1].toLowerCase() as "blue" | "red";
-  if (viewerTeam === "observer" || drawTeam !== viewerTeam) {
-    return `${drawTeam} drew a card`;
-  }
-
-  return event.message;
 }

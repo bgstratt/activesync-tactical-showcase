@@ -8,7 +8,7 @@ namespace TacticalShowcase.Host.Runtime;
 public interface IRuntimeReplicationService
 {
     ReplicationTopologyResponse GetTopology();
-    ReplayEventsResponse GetReplayEvents(int take);
+    ReplayEventsResponse GetReplayEvents(int take, string? viewerPeerId = null, string? perspective = null);
     RuntimePeerActionResult ConnectPeer(string peerId);
     RuntimePeerActionResult DisconnectPeer(string peerId);
     TacticalBoardStateResponse GetTacticalState();
@@ -166,18 +166,56 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         }
     }
 
-    public ReplayEventsResponse GetReplayEvents(int take)
+    public ReplayEventsResponse GetReplayEvents(int take, string? viewerPeerId = null, string? perspective = null)
     {
         lock (_sync)
         {
             var normalizedTake = Math.Clamp(take, 10, 200);
+            var viewerTeam = ResolveViewerTeam(viewerPeerId, perspective);
             var items = _eventLog
                 .TakeLast(normalizedTake)
                 .Reverse<ReplayEventItem>()
+                .Select(item => ProjectReplayEvent(item, viewerTeam))
                 .ToArray();
 
             return new ReplayEventsResponse(DemoRoomId, DateTimeOffset.UtcNow, items);
         }
+    }
+
+    private static ReplayEventItem ProjectReplayEvent(ReplayEventItem item, string viewerTeam)
+    {
+        if (!string.Equals(item.Stream, "card-battle", StringComparison.OrdinalIgnoreCase))
+        {
+            return item;
+        }
+
+        var message = item.Message;
+        if (string.Equals(item.Type, "draw", StringComparison.OrdinalIgnoreCase))
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(message, "^(blue|red)\\s+drew\\s+.+$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                var drawTeam = match.Groups[1].Value.ToLowerInvariant();
+                if (string.Equals(viewerTeam, "observer", StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(viewerTeam, drawTeam, StringComparison.OrdinalIgnoreCase))
+                {
+                    message = $"{drawTeam} drew a card";
+                }
+            }
+        }
+
+        if (string.Equals(item.Type, "play", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(viewerTeam, "observer", StringComparison.OrdinalIgnoreCase))
+        {
+            message = System.Text.RegularExpressions.Regex.Replace(
+                message,
+                "played\\s+.+?\\s+(for|to)",
+                "played a card $1",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase
+            );
+        }
+
+        return item with { Message = message };
     }
 
     public TacticalBoardStateResponse GetTacticalState()

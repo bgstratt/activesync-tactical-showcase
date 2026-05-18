@@ -51,9 +51,9 @@ app.MapGet("/api/replication/topology", (IRuntimeReplicationService runtime) =>
     return Results.Ok(runtime.GetTopology());
 });
 
-app.MapGet("/api/replication/events", (IRuntimeReplicationService runtime, int? take) =>
+app.MapGet("/api/replication/events", (IRuntimeReplicationService runtime, int? take, string? viewerPeerId, string? perspective) =>
 {
-    return Results.Ok(runtime.GetReplayEvents(take ?? 60));
+    return Results.Ok(runtime.GetReplayEvents(take ?? 60, viewerPeerId, perspective));
 });
 
 app.MapPost("/api/runtime/peers/connect", (IRuntimeReplicationService runtime, PeerActionRequest request) =>
