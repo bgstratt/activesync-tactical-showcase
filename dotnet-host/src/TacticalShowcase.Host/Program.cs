@@ -78,9 +78,9 @@ app.MapPost("/api/tactical/action", (IRuntimeReplicationService runtime, Tactica
     return Results.Ok(runtime.ApplyTacticalAction(request));
 });
 
-app.MapGet("/api/card-battle/state", (IRuntimeReplicationService runtime) =>
+app.MapGet("/api/card-battle/state", (IRuntimeReplicationService runtime, string? viewerPeerId, string? perspective) =>
 {
-    return Results.Ok(runtime.GetCardBattleState());
+    return Results.Ok(runtime.GetCardBattleState(viewerPeerId, perspective));
 });
 
 app.MapPost("/api/card-battle/action", (IRuntimeReplicationService runtime, TacticalActionRequest request) =>

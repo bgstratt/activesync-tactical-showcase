@@ -110,6 +110,7 @@ public sealed record CardBattlePlayerStateDto(
     int Energy,
     int DeckCount,
     int DiscardCount,
+    int ConcealedHandCount,
     IReadOnlyList<CardBattleCardDto> Hand
 );
 

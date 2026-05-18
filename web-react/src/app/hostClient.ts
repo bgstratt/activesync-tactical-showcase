@@ -1,5 +1,6 @@
 import type {
   CardBattleActionResponse,
+  CardBattlePerspective,
   CardBattleState,
   HostHealthResponse,
   PeerActionResponse,
@@ -78,8 +79,18 @@ export async function applyTacticalAction(action: TacticalActionRequest): Promis
   return parseResponse<TacticalActionResponse>(response);
 }
 
-export async function fetchCardBattleState(): Promise<CardBattleState> {
-  const response = await fetch(`${getBaseUrl()}/api/card-battle/state`);
+export async function fetchCardBattleState(viewerPeerId?: string, perspective?: CardBattlePerspective): Promise<CardBattleState> {
+  const search = new URLSearchParams();
+  if (viewerPeerId) {
+    search.set("viewerPeerId", viewerPeerId);
+  }
+
+  if (perspective && perspective !== "auto") {
+    search.set("perspective", perspective);
+  }
+
+  const suffix = search.size > 0 ? `?${search.toString()}` : "";
+  const response = await fetch(`${getBaseUrl()}/api/card-battle/state${suffix}`);
   return parseResponse<CardBattleState>(response);
 }
 

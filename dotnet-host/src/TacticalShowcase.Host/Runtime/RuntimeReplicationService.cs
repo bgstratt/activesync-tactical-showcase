@@ -13,7 +13,7 @@ public interface IRuntimeReplicationService
     RuntimePeerActionResult DisconnectPeer(string peerId);
     TacticalBoardStateResponse GetTacticalState();
     TacticalActionResponse ApplyTacticalAction(TacticalActionRequest request);
-    CardBattleStateResponse GetCardBattleState();
+    CardBattleStateResponse GetCardBattleState(string? viewerPeerId = null, string? perspective = null);
     CardBattleActionResponse ApplyCardBattleAction(TacticalActionRequest request);
 }
 
@@ -246,11 +246,11 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         }
     }
 
-    public CardBattleStateResponse GetCardBattleState()
+    public CardBattleStateResponse GetCardBattleState(string? viewerPeerId = null, string? perspective = null)
     {
         lock (_sync)
         {
-            return ToCardBattleResponse(_cardBattleState);
+            return ToCardBattleResponse(_cardBattleState, viewerPeerId, perspective);
         }
     }
 
@@ -258,7 +258,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
     {
         if (string.IsNullOrWhiteSpace(request.Action))
         {
-            return new CardBattleActionResponse(false, "action is required", ToCardBattleResponse(_cardBattleState));
+            return new CardBattleActionResponse(false, "action is required", ToCardBattleResponse(_cardBattleState, request.ActorPeerId, null));
         }
 
         lock (_sync)
@@ -270,7 +270,11 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
             if (action == "set-partition")
             {
                 var partitionResult = ApplyPartitionChange(request, actorPeerId);
-                return new CardBattleActionResponse(partitionResult.IsSuccess, partitionResult.Message, ToCardBattleResponse(_cardBattleState));
+                return new CardBattleActionResponse(
+                    partitionResult.IsSuccess,
+                    partitionResult.Message,
+                    ToCardBattleResponse(_cardBattleState, actorPeerId, null)
+                );
             }
 
             if (_partitionedPeers.Contains(actorPeerId))
@@ -283,7 +287,11 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
 
                 queue.Add(request);
                 AddLocalEvent("card-battle", "queued", $"Queued '{action}' while peer partitioned", actorPeerId);
-                return new CardBattleActionResponse(true, $"Action queued for partitioned peer '{actorPeerId}'", ToCardBattleResponse(_cardBattleState));
+                return new CardBattleActionResponse(
+                    true,
+                    $"Action queued for partitioned peer '{actorPeerId}'",
+                    ToCardBattleResponse(_cardBattleState, actorPeerId, null)
+                );
             }
 
             var result = action switch
@@ -301,7 +309,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
                 PersistCardBattleState();
             }
 
-            return new CardBattleActionResponse(result.IsSuccess, result.Message, ToCardBattleResponse(_cardBattleState));
+            return new CardBattleActionResponse(result.IsSuccess, result.Message, ToCardBattleResponse(_cardBattleState, actorPeerId, null));
         }
     }
 
@@ -832,21 +840,36 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         );
     }
 
-    private CardBattleStateResponse ToCardBattleResponse(CardBattleState state)
+    private CardBattleStateResponse ToCardBattleResponse(CardBattleState state, string? viewerPeerId, string? forcedPerspective)
     {
+        var viewerTeam = ResolveViewerTeam(viewerPeerId, forcedPerspective);
+
         return new CardBattleStateResponse(
             Turn: state.Turn,
             ActiveTeam: state.ActiveTeam,
             Players: state.Players
                 .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
-                .Select(pair => new CardBattlePlayerStateDto(
-                    Team: pair.Key,
-                    Hp: pair.Value.Hp,
-                    Energy: pair.Value.Energy,
-                    DeckCount: pair.Value.Deck.Count,
-                    DiscardCount: pair.Value.Discard.Count,
-                    Hand: pair.Value.Hand.ToArray()
-                ))
+                .Select(pair =>
+                {
+                    var team = pair.Key;
+                    var participant = pair.Value;
+                    var canSeeHand = viewerTeam is not null &&
+                                     !string.Equals(viewerTeam, "observer", StringComparison.OrdinalIgnoreCase) &&
+                                     string.Equals(viewerTeam, team, StringComparison.OrdinalIgnoreCase);
+
+                    var hand = canSeeHand ? participant.Hand.ToArray() : Array.Empty<CardBattleCardDto>();
+                    var concealedCount = canSeeHand ? 0 : participant.Hand.Count;
+
+                    return new CardBattlePlayerStateDto(
+                        Team: team,
+                        Hp: participant.Hp,
+                        Energy: participant.Energy,
+                        DeckCount: participant.Deck.Count,
+                        DiscardCount: participant.Discard.Count,
+                        ConcealedHandCount: concealedCount,
+                        Hand: hand
+                    );
+                })
                 .ToArray(),
             PartitionedPeers: _partitionedPeers.OrderBy(peer => peer, StringComparer.OrdinalIgnoreCase).ToArray(),
             QueuedOps: _queuedCardActionsByPeer
@@ -856,6 +879,31 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
                 .ToArray(),
             UpdatedAtUtc: state.UpdatedAtUtc
         );
+    }
+
+    private static string ResolveViewerTeam(string? viewerPeerId, string? forcedPerspective)
+    {
+        if (!string.IsNullOrWhiteSpace(forcedPerspective))
+        {
+            var requested = forcedPerspective.Trim().ToLowerInvariant();
+            if (requested is "observer" or "blue" or "red")
+            {
+                return requested;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(viewerPeerId))
+        {
+            return "observer";
+        }
+
+        var peer = viewerPeerId.Trim().ToLowerInvariant();
+        if (peer.Contains("observer") || peer.Contains("spectator") || peer.Contains("obs"))
+        {
+            return "observer";
+        }
+
+        return peer.Contains("red") ? "red" : "blue";
     }
 
     private void PersistTacticalState()

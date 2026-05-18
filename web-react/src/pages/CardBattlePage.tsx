@@ -7,14 +7,14 @@ import {
   fetchReplicationEvents,
   fetchReplicationTopology
 } from "../app/hostClient";
-import type { CardBattleCard, CardBattleState, PeerStatus, ReplayEventItem } from "../../../shared/contracts/runtime";
+import type { CardBattleCard, CardBattlePerspective, CardBattleState, PeerStatus, ReplayEventItem } from "../../../shared/contracts/runtime";
 
 const fallbackCardBattleState: CardBattleState = {
   turn: 1,
   activeTeam: "blue",
   players: [
-    { team: "blue", hp: 30, energy: 3, deckCount: 0, discardCount: 0, hand: [] },
-    { team: "red", hp: 30, energy: 3, deckCount: 0, discardCount: 0, hand: [] }
+    { team: "blue", hp: 30, energy: 3, deckCount: 0, discardCount: 0, concealedHandCount: 0, hand: [] },
+    { team: "red", hp: 30, energy: 3, deckCount: 0, discardCount: 0, concealedHandCount: 0, hand: [] }
   ],
   partitionedPeers: [],
   queuedOps: [],
@@ -40,7 +40,7 @@ export function CardBattlePage() {
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [hostError, setHostError] = useState<string | null>(null);
-  const [perspective, setPerspective] = useState<"auto" | ViewerTeam>("auto");
+  const [perspective, setPerspective] = useState<CardBattlePerspective>("auto");
 
   const detectedTeam = teamForPeer(activePeerId);
   const viewerTeam = perspective === "auto" ? detectedTeam : perspective;
@@ -60,7 +60,7 @@ export function CardBattlePage() {
     async function refresh() {
       try {
         const [snapshot, replay, topology] = await Promise.all([
-          fetchCardBattleState(),
+          fetchCardBattleState(activePeerId, perspective),
           fetchReplicationEvents(120),
           fetchReplicationTopology()
         ]);
@@ -94,7 +94,7 @@ export function CardBattlePage() {
       isCanceled = true;
       window.clearInterval(intervalId);
     };
-  }, [activePeerId]);
+  }, [activePeerId, perspective]);
 
   async function runAction(action: "card-draw" | "card-end-turn" | "card-reset") {
     if (!canAct) {
@@ -195,7 +195,7 @@ export function CardBattlePage() {
               <div className="peer-row">
                 <label>
                   Perspective
-                  <select className="peer-select" value={perspective} onChange={(event) => setPerspective(event.target.value as "auto" | ViewerTeam)}>
+                  <select className="peer-select" value={perspective} onChange={(event) => setPerspective(event.target.value as CardBattlePerspective)}>
                     <option value="auto">Auto ({detectedTeam})</option>
                     <option value="blue">Blue</option>
                     <option value="red">Red</option>
@@ -287,28 +287,28 @@ export function CardBattlePage() {
               <div className="card-hand-section">
                 <h3 className="card-hand-header">Concealed Blue Hand</h3>
                 <div className="card-hand-grid">
-                  {Array.from({ length: blue.hand.length }).map((_, index) => (
+                  {Array.from({ length: blue.concealedHandCount }).map((_, index) => (
                     <div key={`concealed-blue-${index}`} className="card-tile concealed" aria-hidden="true">
                       <strong>Hidden Card</strong>
                       <span>Observer view redacts all hand details</span>
                       <small>Card back</small>
                     </div>
                   ))}
-                  {blue.hand.length === 0 ? <p className="ops-empty">No concealed blue cards.</p> : null}
+                  {blue.concealedHandCount === 0 ? <p className="ops-empty">No concealed blue cards.</p> : null}
                 </div>
               </div>
 
               <div className="card-hand-section">
                 <h3 className="card-hand-header">Concealed Red Hand</h3>
                 <div className="card-hand-grid">
-                  {Array.from({ length: red.hand.length }).map((_, index) => (
+                  {Array.from({ length: red.concealedHandCount }).map((_, index) => (
                     <div key={`concealed-red-${index}`} className="card-tile concealed" aria-hidden="true">
                       <strong>Hidden Card</strong>
                       <span>Observer view redacts all hand details</span>
                       <small>Card back</small>
                     </div>
                   ))}
-                  {red.hand.length === 0 ? <p className="ops-empty">No concealed red cards.</p> : null}
+                  {red.concealedHandCount === 0 ? <p className="ops-empty">No concealed red cards.</p> : null}
                 </div>
               </div>
             </>
@@ -316,14 +316,14 @@ export function CardBattlePage() {
             <div className="card-hand-section">
               <h3 className="card-hand-header">Concealed Opponent Hand ({opponentPlayer.team})</h3>
               <div className="card-hand-grid">
-                {Array.from({ length: opponentPlayer.hand.length }).map((_, index) => (
+                {Array.from({ length: opponentPlayer.concealedHandCount }).map((_, index) => (
                   <div key={`concealed-${index}`} className="card-tile concealed" aria-hidden="true">
                     <strong>Hidden Card</strong>
                     <span>Details redacted for this peer view</span>
                     <small>Card back</small>
                   </div>
                 ))}
-                {opponentPlayer.hand.length === 0 ? <p className="ops-empty">No concealed opponent cards.</p> : null}
+                {opponentPlayer.concealedHandCount === 0 ? <p className="ops-empty">No concealed opponent cards.</p> : null}
               </div>
             </div>
           )}

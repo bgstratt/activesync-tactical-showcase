@@ -137,8 +137,11 @@ export interface CardBattlePlayerState {
   energy: number;
   deckCount: number;
   discardCount: number;
+  concealedHandCount: number;
   hand: CardBattleCard[];
 }
+
+export type CardBattlePerspective = "auto" | "blue" | "red" | "observer";
 
 export interface CardBattleState {
   turn: number;
