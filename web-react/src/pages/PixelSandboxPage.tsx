@@ -335,6 +335,10 @@ export function PixelSandboxPage() {
         <p>
           High-frequency terrain painting with burst writes, peer partition toggles, and queue-depth convergence tracking.
         </p>
+        <p className="topology-note">
+          Controls: Brush/radius drive click-paint writes, Run Burst submits randomized batch edits for throughput, Partition/Reconnect demonstrates queued
+          operations and replay drain, and Run Scenario executes deterministic stress script.
+        </p>
       </header>
 
       <div className="tactical-layout">

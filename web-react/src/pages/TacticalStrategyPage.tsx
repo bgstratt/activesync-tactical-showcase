@@ -263,6 +263,10 @@ export function TacticalStrategyPage() {
           Collaborative battle-planning sandbox with editable terrain, fog-of-war, synchronized token-style entities, and a replay-friendly runtime
           operation timeline.
         </p>
+        <p className="topology-note">
+          Controls: Tool selects what clicks do. Terrain choice only applies when Tool is terrain. Token tool moves selected unit. Advance Turn increments
+          shared initiative. Run Scenario executes a deterministic partition/replay script.
+        </p>
       </header>
 
       <div className="tactical-layout">

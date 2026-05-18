@@ -204,6 +204,10 @@ export function DungeonBuilderPage() {
         <p>
           Build shared dungeon layouts with rooms, doors, traps, loot markers, entity placement, and trigger wiring over the replicated host-backed board.
         </p>
+        <p className="topology-note">
+          Controls: Paint writes tile type, Token moves selected entity, Link creates trigger source/target edges, Erase clears tile content. Run Scenario
+          executes trigger + reconnect flow and validates replay behavior.
+        </p>
       </header>
 
       <div className="tactical-layout">

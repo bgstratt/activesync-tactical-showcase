@@ -337,7 +337,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
             {
                 "card-draw" => ApplyCardDraw(request, actorPeerId),
                 "card-play" => ApplyCardPlay(request, actorPeerId),
-                "card-end-turn" => ApplyCardEndTurn(actorPeerId),
+                "card-end-turn" => ApplyCardEndTurn(request, actorPeerId),
                 "card-reset" => ApplyCardReset(actorPeerId),
                 _ => new RuntimePeerActionResult(false, $"Unsupported action '{request.Action}'")
             };
@@ -693,7 +693,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         {
             "card-draw" => ApplyCardDraw(request, actorPeerId),
             "card-play" => ApplyCardPlay(request, actorPeerId),
-            "card-end-turn" => ApplyCardEndTurn(actorPeerId),
+            "card-end-turn" => ApplyCardEndTurn(request, actorPeerId),
             "card-reset" => ApplyCardReset(actorPeerId),
             _ => new RuntimePeerActionResult(false, $"Unsupported action '{request.Action}'")
         };
@@ -847,7 +847,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
             {
                 "card-draw" => ApplyCardDraw(queued, peerId),
                 "card-play" => ApplyCardPlay(queued, peerId),
-                "card-end-turn" => ApplyCardEndTurn(peerId),
+                "card-end-turn" => ApplyCardEndTurn(queued, peerId),
                 "card-reset" => ApplyCardReset(peerId),
                 _ => new RuntimePeerActionResult(false, $"Unsupported queued action '{queued.Action}'")
             };
@@ -1213,9 +1213,9 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         return new RuntimePeerActionResult(true, "ok");
     }
 
-    private RuntimePeerActionResult ApplyCardEndTurn(string actorPeerId)
+    private RuntimePeerActionResult ApplyCardEndTurn(TacticalActionRequest request, string actorPeerId)
     {
-        var team = ResolveCardTeam(null, actorPeerId);
+        var team = ResolveCardTeam(request.Team, actorPeerId);
         if (_cardBattleState.ActiveTeam != team)
         {
             return new RuntimePeerActionResult(false, $"It is not {team}'s turn");

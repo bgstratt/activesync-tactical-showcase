@@ -219,6 +219,10 @@ export function CardBattlePage() {
         <p className="hero-tag">MODE</p>
         <h1>Card Battle</h1>
         <p>Host-backed synchronized deck play with turn authority, partition queueing, and replayable event stream.</p>
+        <p className="topology-note">
+          Turn model: only the active team can draw/play/end turn. Perspective changes visibility, while active peer identifies action source. End Turn now
+          respects selected team context and hands off turn authority to the opponent.
+        </p>
       </header>
 
       <div className="tactical-layout">
