@@ -1,6 +1,19 @@
 import { useEffect, useState } from "react";
-import { applyTacticalAction, fetchReplicationEvents, fetchTacticalState } from "../app/hostClient";
-import type { ReplayEventItem, TacticalActionRequest, TacticalBoardState, TacticalToken } from "../../../shared/contracts/runtime";
+import {
+  applyTacticalAction,
+  connectPeer,
+  disconnectPeer,
+  fetchReplicationEvents,
+  fetchReplicationTopology,
+  fetchTacticalState
+} from "../app/hostClient";
+import type {
+  PeerStatus,
+  ReplayEventItem,
+  TacticalActionRequest,
+  TacticalBoardState,
+  TacticalToken
+} from "../../../shared/contracts/runtime";
 
 type TerrainType = "plain" | "wall" | "difficult";
 type ToolMode = "terrain" | "fog" | "token" | "ping" | "erase";
@@ -27,13 +40,17 @@ export function TacticalStrategyPage() {
   const [selectedTerrain, setSelectedTerrain] = useState<TerrainType>("wall");
   const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
   const [replayOps, setReplayOps] = useState<ReplayEventItem[]>([]);
+  const [onlinePeers, setOnlinePeers] = useState<PeerStatus[]>([]);
+  const [peerDraft, setPeerDraft] = useState("charlie");
+  const [peerMessage, setPeerMessage] = useState<string | null>(null);
   const [hostError, setHostError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
 
-  async function refreshReplayEvents() {
-    const replay = await fetchReplicationEvents(80);
+  async function refreshRuntimeViews() {
+    const [replay, topology] = await Promise.all([fetchReplicationEvents(80), fetchReplicationTopology()]);
     const tacticalEvents = replay.events.filter((event) => event.stream === "tactical" || event.stream === "command");
     setReplayOps(tacticalEvents);
+    setOnlinePeers(topology.peers);
   }
 
   useEffect(() => {
@@ -41,12 +58,17 @@ export function TacticalStrategyPage() {
 
     async function loadState() {
       try {
-        const [snapshot, replay] = await Promise.all([fetchTacticalState(), fetchReplicationEvents(80)]);
+        const [snapshot, replay, topology] = await Promise.all([
+          fetchTacticalState(),
+          fetchReplicationEvents(80),
+          fetchReplicationTopology()
+        ]);
         if (!isCanceled) {
           setState(snapshot);
           setHostError(null);
           const tacticalEvents = replay.events.filter((event) => event.stream === "tactical" || event.stream === "command");
           setReplayOps(tacticalEvents);
+          setOnlinePeers(topology.peers);
           if (snapshot.tokens.length > 0) {
             setSelectedTokenId(snapshot.tokens[0].id);
           }
@@ -75,9 +97,41 @@ export function TacticalStrategyPage() {
       const result = await applyTacticalAction(action);
       setState(result.state);
       setHostError(result.ok ? null : result.message);
-      await refreshReplayEvents();
+      await refreshRuntimeViews();
     } catch (error) {
       setHostError(error instanceof Error ? error.message : "Host tactical action failed");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handlePeerConnect() {
+    const peerId = peerDraft.trim();
+    if (!peerId) {
+      setPeerMessage("Enter a peer id first");
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const response = await connectPeer(peerId);
+      setPeerMessage(response.message);
+      await refreshRuntimeViews();
+    } catch (error) {
+      setPeerMessage(error instanceof Error ? error.message : "Peer connect failed");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handlePeerDisconnect(peerId: string) {
+    setIsBusy(true);
+    try {
+      const response = await disconnectPeer(peerId);
+      setPeerMessage(response.message);
+      await refreshRuntimeViews();
+    } catch (error) {
+      setPeerMessage(error instanceof Error ? error.message : "Peer disconnect failed");
     } finally {
       setIsBusy(false);
     }
@@ -244,6 +298,39 @@ export function TacticalStrategyPage() {
             </button>
           </div>
 
+          <h2>Peers</h2>
+          <div className="peer-row">
+            <input
+              className="peer-input"
+              type="text"
+              value={peerDraft}
+              onChange={(event) => setPeerDraft(event.target.value)}
+              placeholder="peer id"
+              disabled={isBusy}
+            />
+            <button type="button" className="action-btn tactical-btn" onClick={() => void handlePeerConnect()} disabled={isBusy}>
+              Connect
+            </button>
+          </div>
+          {peerMessage && <p className="topology-note">{peerMessage}</p>}
+          <div className="peer-list">
+            {onlinePeers.map((peer) => (
+              <div key={peer.peerId} className="peer-item">
+                <span>
+                  {peer.peerId} {peer.online ? "online" : "offline"}
+                </span>
+                <button
+                  type="button"
+                  className="action-btn tactical-btn"
+                  onClick={() => void handlePeerDisconnect(peer.peerId)}
+                  disabled={isBusy || !peer.online}
+                >
+                  Disconnect
+                </button>
+              </div>
+            ))}
+          </div>
+
           <h2>Operation Timeline</h2>
           <ul className="ops-list">
             {replayOps.map((op, index) => (
@@ -252,6 +339,7 @@ export function TacticalStrategyPage() {
                   {new Date(op.timestampUtc).toLocaleTimeString()} [{op.stream}:{op.type}]
                 </span>
                 <span>{op.message}</span>
+                {op.peerId ? <span className="replay-peer">peer: {op.peerId}</span> : null}
               </li>
             ))}
             {replayOps.length === 0 ? <li className="ops-empty">No runtime events yet. Start editing the board.</li> : null}
