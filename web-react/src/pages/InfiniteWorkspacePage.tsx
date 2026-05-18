@@ -267,7 +267,7 @@ export function InfiniteWorkspacePage() {
   const dragRef = useRef<{ nodeId: string; offsetX: number; offsetY: number } | null>(null);
   const drawRef = useRef<Point[] | null>(null);
 
-  const liveState = cloudState;
+  const liveState = peerStates[activePeerId];
   const replayState = useMemo(() => replayWorkspace(cloudLog, replayCursor), [cloudLog, replayCursor]);
   const displayState = followLiveReplay ? liveState : replayState;
 
