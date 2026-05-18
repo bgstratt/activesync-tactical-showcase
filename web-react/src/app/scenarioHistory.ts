@@ -13,6 +13,15 @@ export interface ScenarioHistoryEntry {
   buildRef: string;
 }
 
+export interface ScenarioHistoryComparison {
+  latest: ScenarioHistoryEntry;
+  previous: ScenarioHistoryEntry;
+  passedDelta: number;
+  totalDelta: number;
+  okChanged: boolean;
+  summary: string;
+}
+
 function historyKey(mode: string): string {
   return `scenario-history:${mode}`;
 }
@@ -38,6 +47,45 @@ export function loadScenarioHistory(mode: string): ScenarioHistoryEntry[] {
   } catch {
     return [];
   }
+}
+
+export function clearScenarioHistory(mode: string): void {
+  try {
+    window.localStorage.removeItem(historyKey(mode));
+  } catch {
+    // Non-fatal when storage is unavailable.
+  }
+}
+
+function formatSigned(delta: number): string {
+  if (delta > 0) {
+    return `+${delta}`;
+  }
+
+  return String(delta);
+}
+
+export function compareRecentScenarioRuns(history: ScenarioHistoryEntry[]): ScenarioHistoryComparison | null {
+  if (history.length < 2) {
+    return null;
+  }
+
+  const latest = history[0];
+  const previous = history[1];
+  const passedDelta = latest.passed - previous.passed;
+  const totalDelta = latest.total - previous.total;
+  const okChanged = latest.ok !== previous.ok;
+  const statusSegment = okChanged ? `status ${previous.ok ? "ok" : "failed"} -> ${latest.ok ? "ok" : "failed"}` : `status unchanged (${latest.ok ? "ok" : "failed"})`;
+  const summary = `vs previous: pass delta ${formatSigned(passedDelta)} of ${formatSigned(totalDelta)} assertions, ${statusSegment}`;
+
+  return {
+    latest,
+    previous,
+    passedDelta,
+    totalDelta,
+    okChanged,
+    summary
+  };
 }
 
 export function recordScenarioRun(mode: string, response: DemoScenarioRunResponse): ScenarioHistoryEntry[] {

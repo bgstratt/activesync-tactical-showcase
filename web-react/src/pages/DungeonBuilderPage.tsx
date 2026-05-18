@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
 import { applyTacticalAction, fetchReplicationEvents, fetchTacticalState, runDemoScenario } from "../app/hostClient";
-import { loadScenarioHistory, recordScenarioRun, type ScenarioHistoryEntry } from "../app/scenarioHistory";
+import {
+  clearScenarioHistory,
+  compareRecentScenarioRuns,
+  loadScenarioHistory,
+  recordScenarioRun,
+  type ScenarioHistoryEntry
+} from "../app/scenarioHistory";
 import type { DemoScenarioRunResponse, ReplayEventItem, TacticalActionRequest, TacticalBoardState, TacticalToken } from "../../../shared/contracts/runtime";
 
 type PaintType = "room" | "wall" | "door" | "trap" | "loot";
@@ -34,6 +40,7 @@ export function DungeonBuilderPage() {
   const [events, setEvents] = useState<ReplayEventItem[]>([]);
   const [scenarioResult, setScenarioResult] = useState<DemoScenarioRunResponse | null>(null);
   const [scenarioHistory, setScenarioHistory] = useState<ScenarioHistoryEntry[]>(() => loadScenarioHistory("dungeon"));
+  const scenarioComparison = compareRecentScenarioRuns(scenarioHistory);
   const [hostError, setHostError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
 
@@ -129,6 +136,11 @@ export function DungeonBuilderPage() {
     } finally {
       setIsBusy(false);
     }
+  }
+
+  function handleClearScenarioHistory() {
+    clearScenarioHistory("dungeon");
+    setScenarioHistory([]);
   }
 
   function addEntity(team: TokenTeam) {
@@ -355,6 +367,12 @@ export function DungeonBuilderPage() {
           {scenarioHistory.length > 0 ? (
             <>
               <h2>Recent Runs</h2>
+              {scenarioComparison ? <p className="topology-note">Compare: {scenarioComparison.summary}</p> : null}
+              <div className="action-row">
+                <button type="button" className="action-btn tactical-btn" onClick={handleClearScenarioHistory} disabled={isBusy}>
+                  Clear History
+                </button>
+              </div>
               <ul className="ops-list">
                 {scenarioHistory.map((entry, index) => (
                   <li key={`${entry.completedAtUtc}-${index}`}>

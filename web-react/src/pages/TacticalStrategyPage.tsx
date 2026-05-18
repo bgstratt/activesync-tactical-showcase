@@ -8,7 +8,13 @@ import {
   fetchTacticalState,
   runDemoScenario
 } from "../app/hostClient";
-import { loadScenarioHistory, recordScenarioRun, type ScenarioHistoryEntry } from "../app/scenarioHistory";
+import {
+  clearScenarioHistory,
+  compareRecentScenarioRuns,
+  loadScenarioHistory,
+  recordScenarioRun,
+  type ScenarioHistoryEntry
+} from "../app/scenarioHistory";
 import type {
   DemoScenarioRunResponse,
   PeerStatus,
@@ -54,6 +60,7 @@ export function TacticalStrategyPage() {
   const [isBusy, setIsBusy] = useState(false);
   const [scenarioResult, setScenarioResult] = useState<DemoScenarioRunResponse | null>(null);
   const [scenarioHistory, setScenarioHistory] = useState<ScenarioHistoryEntry[]>(() => loadScenarioHistory("tactical"));
+  const scenarioComparison = compareRecentScenarioRuns(scenarioHistory);
 
   async function refreshRuntimeViews() {
     const [replay, topology] = await Promise.all([fetchReplicationEvents(80), fetchReplicationTopology()]);
@@ -173,7 +180,13 @@ export function TacticalStrategyPage() {
     }
   }
 
+
+  function handleClearScenarioHistory() {
+    clearScenarioHistory("tactical");
+    setScenarioHistory([]);
+  }
   async function handleRunScenario() {
+  
     setIsBusy(true);
     try {
       const result = await runDemoScenario("tactical.partition-replay");
@@ -461,6 +474,12 @@ export function TacticalStrategyPage() {
           {scenarioHistory.length > 0 ? (
             <>
               <h2>Recent Runs</h2>
+              {scenarioComparison ? <p className="topology-note">Compare: {scenarioComparison.summary}</p> : null}
+              <div className="action-row">
+                <button type="button" className="action-btn tactical-btn" onClick={handleClearScenarioHistory} disabled={isBusy}>
+                  Clear History
+                </button>
+              </div>
               <ul className="ops-list">
                 {scenarioHistory.map((entry, index) => (
                   <li key={`${entry.completedAtUtc}-${index}`}>

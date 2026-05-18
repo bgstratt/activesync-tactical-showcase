@@ -7,7 +7,13 @@ import {
   fetchTacticalState,
   runDemoScenario
 } from "../app/hostClient";
-import { loadScenarioHistory, recordScenarioRun, type ScenarioHistoryEntry } from "../app/scenarioHistory";
+import {
+  clearScenarioHistory,
+  compareRecentScenarioRuns,
+  loadScenarioHistory,
+  recordScenarioRun,
+  type ScenarioHistoryEntry
+} from "../app/scenarioHistory";
 import type { DemoScenarioRunResponse, PeerStatus, ReplayEventItem, TacticalBoardState } from "../../../shared/contracts/runtime";
 
 type PixelBrush = "plain" | "wall" | "difficult";
@@ -58,6 +64,7 @@ export function PixelSandboxPage() {
   const [burstSamples, setBurstSamples] = useState<BurstSample[]>([]);
   const [scenarioResult, setScenarioResult] = useState<DemoScenarioRunResponse | null>(null);
   const [scenarioHistory, setScenarioHistory] = useState<ScenarioHistoryEntry[]>(() => loadScenarioHistory("pixel"));
+  const scenarioComparison = compareRecentScenarioRuns(scenarioHistory);
   const [pendingDrain, setPendingDrain] = useState<PendingDrainMeasurement | null>(null);
   const nextSampleId = useRef(1);
 
@@ -261,6 +268,11 @@ export function PixelSandboxPage() {
     } finally {
       setRunningBurst(false);
     }
+  }
+
+  function handleClearScenarioHistory() {
+    clearScenarioHistory("pixel");
+    setScenarioHistory([]);
   }
 
   function clearBenchmarks() {
@@ -529,6 +541,12 @@ export function PixelSandboxPage() {
           {scenarioHistory.length > 0 ? (
             <>
               <h2>Recent Runs</h2>
+              {scenarioComparison ? <p className="topology-note">Compare: {scenarioComparison.summary}</p> : null}
+              <div className="action-row">
+                <button type="button" className="action-btn tactical-btn" onClick={handleClearScenarioHistory} disabled={runningBurst}>
+                  Clear History
+                </button>
+              </div>
               <ul className="ops-list">
                 {scenarioHistory.map((entry, index) => (
                   <li key={`${entry.completedAtUtc}-${index}`}>

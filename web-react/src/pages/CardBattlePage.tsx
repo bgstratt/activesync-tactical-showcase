@@ -8,7 +8,13 @@ import {
   fetchReplicationTopology,
   runDemoScenario
 } from "../app/hostClient";
-import { loadScenarioHistory, recordScenarioRun, type ScenarioHistoryEntry } from "../app/scenarioHistory";
+import {
+  clearScenarioHistory,
+  compareRecentScenarioRuns,
+  loadScenarioHistory,
+  recordScenarioRun,
+  type ScenarioHistoryEntry
+} from "../app/scenarioHistory";
 import type {
   CardBattleCard,
   CardBattlePerspective,
@@ -51,6 +57,7 @@ export function CardBattlePage() {
   const [hostError, setHostError] = useState<string | null>(null);
   const [scenarioResult, setScenarioResult] = useState<DemoScenarioRunResponse | null>(null);
   const [scenarioHistory, setScenarioHistory] = useState<ScenarioHistoryEntry[]>(() => loadScenarioHistory("card-battle"));
+  const scenarioComparison = compareRecentScenarioRuns(scenarioHistory);
   const [perspective, setPerspective] = useState<CardBattlePerspective>("auto");
 
   const detectedTeam = teamForPeer(activePeerId);
@@ -199,6 +206,11 @@ export function CardBattlePage() {
     } catch (error) {
       setHostError(error instanceof Error ? error.message : "Unable to run card scenario");
     }
+  }
+
+  function handleClearScenarioHistory() {
+    clearScenarioHistory("card-battle");
+    setScenarioHistory([]);
   }
 
   return (
@@ -421,6 +433,12 @@ export function CardBattlePage() {
           {scenarioHistory.length > 0 ? (
             <>
               <h2>Recent Runs</h2>
+              {scenarioComparison ? <p className="topology-note">Compare: {scenarioComparison.summary}</p> : null}
+              <div className="action-row">
+                <button type="button" className="action-btn tactical-btn" onClick={handleClearScenarioHistory}>
+                  Clear History
+                </button>
+              </div>
               <ul className="ops-list">
                 {scenarioHistory.map((entry, index) => (
                   <li key={`${entry.completedAtUtc}-${index}`}>
