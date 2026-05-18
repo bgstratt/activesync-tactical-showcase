@@ -433,7 +433,22 @@ export function CardBattlePage() {
           {scenarioHistory.length > 0 ? (
             <>
               <h2>Recent Runs</h2>
-              {scenarioComparison ? <p className="topology-note">Compare: {scenarioComparison.summary}</p> : null}
+              {scenarioComparison ? (
+                <div className="scenario-compare">
+                  <span
+                    className={`scenario-compare-badge ${
+                      scenarioComparison.isRegression
+                        ? "scenario-compare-badge-regression"
+                        : scenarioComparison.isImprovement
+                          ? "scenario-compare-badge-improvement"
+                          : "scenario-compare-badge-stable"
+                    }`}
+                  >
+                    {scenarioComparison.isRegression ? "Regression" : scenarioComparison.isImprovement ? "Improved" : "Stable"}
+                  </span>
+                  <p className="topology-note">Compare: {scenarioComparison.summary}</p>
+                </div>
+              ) : null}
               <div className="action-row">
                 <button type="button" className="action-btn tactical-btn" onClick={handleClearScenarioHistory}>
                   Clear History

@@ -744,6 +744,41 @@ body {
   gap: 0.35rem;
 }
 
+.scenario-compare {
+  display: grid;
+  gap: 0.32rem;
+}
+
+.scenario-compare-badge {
+  display: inline-flex;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid transparent;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+}
+
+.scenario-compare-badge-regression {
+  border-color: rgba(155, 36, 36, 0.5);
+  background: rgba(155, 36, 36, 0.14);
+  color: #7f1d15;
+}
+
+.scenario-compare-badge-improvement {
+  border-color: rgba(41, 125, 71, 0.45);
+  background: rgba(41, 125, 71, 0.14);
+  color: #165b34;
+}
+
+.scenario-compare-badge-stable {
+  border-color: rgba(62, 85, 129, 0.36);
+  background: rgba(62, 85, 129, 0.12);
+  color: #2a4066;
+}
+
 .scenario-pass {
   border-color: rgba(41, 125, 71, 0.28) !important;
   background: rgba(41, 125, 71, 0.08) !important;

@@ -19,6 +19,8 @@ export interface ScenarioHistoryComparison {
   passedDelta: number;
   totalDelta: number;
   okChanged: boolean;
+  isRegression: boolean;
+  isImprovement: boolean;
   summary: string;
 }
 
@@ -75,6 +77,8 @@ export function compareRecentScenarioRuns(history: ScenarioHistoryEntry[]): Scen
   const passedDelta = latest.passed - previous.passed;
   const totalDelta = latest.total - previous.total;
   const okChanged = latest.ok !== previous.ok;
+  const isRegression = passedDelta < 0 || (previous.ok && !latest.ok);
+  const isImprovement = passedDelta > 0 || (!previous.ok && latest.ok);
   const statusSegment = okChanged ? `status ${previous.ok ? "ok" : "failed"} -> ${latest.ok ? "ok" : "failed"}` : `status unchanged (${latest.ok ? "ok" : "failed"})`;
   const summary = `vs previous: pass delta ${formatSigned(passedDelta)} of ${formatSigned(totalDelta)} assertions, ${statusSegment}`;
 
@@ -84,6 +88,8 @@ export function compareRecentScenarioRuns(history: ScenarioHistoryEntry[]): Scen
     passedDelta,
     totalDelta,
     okChanged,
+    isRegression,
+    isImprovement,
     summary
   };
 }
