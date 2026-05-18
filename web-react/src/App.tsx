@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
+import { CardBattlePage } from "./pages/CardBattlePage";
 import { FeaturePage } from "./pages/FeaturePage";
 import { DungeonBuilderPage } from "./pages/DungeonBuilderPage";
 import { LandingPage } from "./pages/LandingPage";
@@ -24,7 +25,7 @@ export function App() {
         <Route path="/modes/tactical-strategy" element={<TacticalStrategyPage />} />
         <Route path="/modes/dungeon-builder" element={<DungeonBuilderPage />} />
         <Route path="/modes/pixel-sandbox" element={<PixelSandboxPage />} />
-        <Route path="/modes/card-battle" element={<FeaturePage routePath="/modes/card-battle" />} />
+        <Route path="/modes/card-battle" element={<CardBattlePage />} />
         <Route path="/modes/replay-inspector" element={<ReplayInspectorPage />} />
         <Route path="/diagnostics/topology" element={<FeaturePage routePath="/diagnostics/topology" />} />
         <Route path="/diagnostics/ops" element={<FeaturePage routePath="/diagnostics/ops" />} />

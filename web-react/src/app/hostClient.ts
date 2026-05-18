@@ -1,4 +1,6 @@
 import type {
+  CardBattleActionResponse,
+  CardBattleState,
   HostHealthResponse,
   PeerActionResponse,
   ReplayEventsResponse,
@@ -74,4 +76,21 @@ export async function applyTacticalAction(action: TacticalActionRequest): Promis
   });
 
   return parseResponse<TacticalActionResponse>(response);
+}
+
+export async function fetchCardBattleState(): Promise<CardBattleState> {
+  const response = await fetch(`${getBaseUrl()}/api/card-battle/state`);
+  return parseResponse<CardBattleState>(response);
+}
+
+export async function applyCardBattleAction(action: TacticalActionRequest): Promise<CardBattleActionResponse> {
+  const response = await fetch(`${getBaseUrl()}/api/card-battle/action`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(action)
+  });
+
+  return parseResponse<CardBattleActionResponse>(response);
 }

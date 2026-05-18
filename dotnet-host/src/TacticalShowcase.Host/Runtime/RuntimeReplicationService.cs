@@ -13,6 +13,8 @@ public interface IRuntimeReplicationService
     RuntimePeerActionResult DisconnectPeer(string peerId);
     TacticalBoardStateResponse GetTacticalState();
     TacticalActionResponse ApplyTacticalAction(TacticalActionRequest request);
+    CardBattleStateResponse GetCardBattleState();
+    CardBattleActionResponse ApplyCardBattleAction(TacticalActionRequest request);
 }
 
 public sealed record RuntimePeerActionResult(bool IsSuccess, string Message);
@@ -30,7 +32,9 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
     private readonly List<ReplayEventItem> _eventLog = new();
     private readonly HashSet<string> _partitionedPeers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<TacticalActionRequest>> _queuedActionsByPeer = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<TacticalActionRequest>> _queuedCardActionsByPeer = new(StringComparer.OrdinalIgnoreCase);
     private TacticalState _tacticalState = TacticalState.CreateDefault();
+    private CardBattleState _cardBattleState = CardBattleState.CreateDefault();
 
     private const string DemoRoomId = "tactical-demo-session";
 
@@ -242,6 +246,65 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         }
     }
 
+    public CardBattleStateResponse GetCardBattleState()
+    {
+        lock (_sync)
+        {
+            return ToCardBattleResponse(_cardBattleState);
+        }
+    }
+
+    public CardBattleActionResponse ApplyCardBattleAction(TacticalActionRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Action))
+        {
+            return new CardBattleActionResponse(false, "action is required", ToCardBattleResponse(_cardBattleState));
+        }
+
+        lock (_sync)
+        {
+            var actorPeerId = string.IsNullOrWhiteSpace(request.ActorPeerId) ? "alpha" : request.ActorPeerId.Trim();
+            EnsurePeerRegistered(actorPeerId);
+
+            var action = request.Action.Trim().ToLowerInvariant();
+            if (action == "set-partition")
+            {
+                var partitionResult = ApplyPartitionChange(request, actorPeerId);
+                return new CardBattleActionResponse(partitionResult.IsSuccess, partitionResult.Message, ToCardBattleResponse(_cardBattleState));
+            }
+
+            if (_partitionedPeers.Contains(actorPeerId))
+            {
+                if (!_queuedCardActionsByPeer.TryGetValue(actorPeerId, out var queue))
+                {
+                    queue = [];
+                    _queuedCardActionsByPeer[actorPeerId] = queue;
+                }
+
+                queue.Add(request);
+                AddLocalEvent("card-battle", "queued", $"Queued '{action}' while peer partitioned", actorPeerId);
+                return new CardBattleActionResponse(true, $"Action queued for partitioned peer '{actorPeerId}'", ToCardBattleResponse(_cardBattleState));
+            }
+
+            var result = action switch
+            {
+                "card-draw" => ApplyCardDraw(request, actorPeerId),
+                "card-play" => ApplyCardPlay(request, actorPeerId),
+                "card-end-turn" => ApplyCardEndTurn(actorPeerId),
+                "card-reset" => ApplyCardReset(actorPeerId),
+                _ => new RuntimePeerActionResult(false, $"Unsupported action '{request.Action}'")
+            };
+
+            if (result.IsSuccess)
+            {
+                _cardBattleState = _cardBattleState with { UpdatedAtUtc = DateTimeOffset.UtcNow };
+                PersistCardBattleState();
+            }
+
+            return new CardBattleActionResponse(result.IsSuccess, result.Message, ToCardBattleResponse(_cardBattleState));
+        }
+    }
+
     private RuntimePeerActionResult ApplyPartitionChange(TacticalActionRequest request, string actorPeerId)
     {
         var targetPeerId = string.IsNullOrWhiteSpace(request.TargetPeerId) ? actorPeerId : request.TargetPeerId.Trim();
@@ -258,6 +321,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         _partitionedPeers.Remove(targetPeerId);
         AddLocalEvent("tactical", "reconnect", $"Reconnected peer '{targetPeerId}'", actorPeerId);
         ReplayQueuedPeerActions(targetPeerId);
+        ReplayQueuedCardActions(targetPeerId);
         return new RuntimePeerActionResult(true, $"Peer '{targetPeerId}' reconnected");
     }
 
@@ -299,6 +363,41 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
             else
             {
                 AddLocalEvent("tactical", "replay-failed", result.Message, peerId);
+            }
+        }
+    }
+
+    private void ReplayQueuedCardActions(string peerId)
+    {
+        if (!_queuedCardActionsByPeer.TryGetValue(peerId, out var queuedActions) || queuedActions.Count == 0)
+        {
+            return;
+        }
+
+        var replayList = queuedActions.ToArray();
+        queuedActions.Clear();
+
+        foreach (var queued in replayList)
+        {
+            var action = queued.Action.Trim().ToLowerInvariant();
+            var result = action switch
+            {
+                "card-draw" => ApplyCardDraw(queued, peerId),
+                "card-play" => ApplyCardPlay(queued, peerId),
+                "card-end-turn" => ApplyCardEndTurn(peerId),
+                "card-reset" => ApplyCardReset(peerId),
+                _ => new RuntimePeerActionResult(false, $"Unsupported queued action '{queued.Action}'")
+            };
+
+            if (result.IsSuccess)
+            {
+                _cardBattleState = _cardBattleState with { UpdatedAtUtc = DateTimeOffset.UtcNow };
+                PersistCardBattleState();
+                AddLocalEvent("card-battle", "replay", $"Replayed queued action '{queued.Action}'", peerId);
+            }
+            else
+            {
+                AddLocalEvent("card-battle", "replay-failed", result.Message, peerId);
             }
         }
     }
@@ -558,6 +657,145 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         return new RuntimePeerActionResult(true, "ok");
     }
 
+    private RuntimePeerActionResult ApplyCardDraw(TacticalActionRequest request, string actorPeerId)
+    {
+        var team = ResolveCardTeam(request.Team, actorPeerId);
+        if (!_cardBattleState.Players.TryGetValue(team, out var player))
+        {
+            return new RuntimePeerActionResult(false, $"Unknown team '{team}'");
+        }
+
+        if (_cardBattleState.ActiveTeam != team)
+        {
+            return new RuntimePeerActionResult(false, $"It is not {team}'s turn");
+        }
+
+        if (player.Deck.Count == 0)
+        {
+            return new RuntimePeerActionResult(false, $"{team} has no cards left in deck");
+        }
+
+        var nextDeck = player.Deck.ToList();
+        var card = nextDeck[0];
+        nextDeck.RemoveAt(0);
+
+        var nextHand = player.Hand.ToList();
+        nextHand.Add(card);
+        if (nextHand.Count > 8)
+        {
+            return new RuntimePeerActionResult(false, "Hand is full");
+        }
+
+        _cardBattleState.Players[team] = player with { Deck = nextDeck, Hand = nextHand };
+        AddLocalEvent("card-battle", "draw", $"{team} drew {card.Name}", actorPeerId);
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
+    private RuntimePeerActionResult ApplyCardPlay(TacticalActionRequest request, string actorPeerId)
+    {
+        var team = ResolveCardTeam(request.Team, actorPeerId);
+        if (!_cardBattleState.Players.TryGetValue(team, out var player))
+        {
+            return new RuntimePeerActionResult(false, $"Unknown team '{team}'");
+        }
+
+        if (_cardBattleState.ActiveTeam != team)
+        {
+            return new RuntimePeerActionResult(false, $"It is not {team}'s turn");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.CardId))
+        {
+            return new RuntimePeerActionResult(false, "cardId is required");
+        }
+
+        var hand = player.Hand.ToList();
+        var cardIndex = hand.FindIndex(card => string.Equals(card.Id, request.CardId, StringComparison.Ordinal));
+        if (cardIndex < 0)
+        {
+            return new RuntimePeerActionResult(false, "card not found in hand");
+        }
+
+        var card = hand[cardIndex];
+        if (player.Energy < card.Cost)
+        {
+            return new RuntimePeerActionResult(false, "insufficient energy");
+        }
+
+        var targetTeam = (request.TargetTeam ?? OpponentTeam(team)).Trim().ToLowerInvariant();
+        if (!_cardBattleState.Players.TryGetValue(targetTeam, out var targetPlayer))
+        {
+            return new RuntimePeerActionResult(false, $"Unknown target team '{targetTeam}'");
+        }
+
+        hand.RemoveAt(cardIndex);
+        var discard = player.Discard.ToList();
+        discard.Add(card);
+        var updatedPlayer = player with { Hand = hand, Discard = discard, Energy = player.Energy - card.Cost };
+        _cardBattleState.Players[team] = updatedPlayer;
+
+        if (card.EffectType == "damage")
+        {
+            var hp = Math.Max(0, targetPlayer.Hp - card.Amount);
+            _cardBattleState.Players[targetTeam] = targetPlayer with { Hp = hp };
+            AddLocalEvent("card-battle", "play", $"{team} played {card.Name} for {card.Amount} damage to {targetTeam}", actorPeerId);
+        }
+        else
+        {
+            var hp = Math.Min(30, targetPlayer.Hp + card.Amount);
+            _cardBattleState.Players[targetTeam] = targetPlayer with { Hp = hp };
+            AddLocalEvent("card-battle", "play", $"{team} played {card.Name} to heal {targetTeam} for {card.Amount}", actorPeerId);
+        }
+
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
+    private RuntimePeerActionResult ApplyCardEndTurn(string actorPeerId)
+    {
+        var team = ResolveCardTeam(null, actorPeerId);
+        if (_cardBattleState.ActiveTeam != team)
+        {
+            return new RuntimePeerActionResult(false, $"It is not {team}'s turn");
+        }
+
+        var nextTeam = OpponentTeam(team);
+        _cardBattleState = _cardBattleState with
+        {
+            Turn = _cardBattleState.Turn + 1,
+            ActiveTeam = nextTeam
+        };
+
+        if (_cardBattleState.Players.TryGetValue(nextTeam, out var nextPlayer))
+        {
+            _cardBattleState.Players[nextTeam] = nextPlayer with { Energy = Math.Min(6, nextPlayer.Energy + 1) };
+        }
+
+        AddLocalEvent("card-battle", "turn", $"Turn advanced to {_cardBattleState.Turn} ({nextTeam})", actorPeerId);
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
+    private RuntimePeerActionResult ApplyCardReset(string actorPeerId)
+    {
+        _cardBattleState = CardBattleState.CreateDefault();
+        AddLocalEvent("card-battle", "reset", "Card battle reset to baseline", actorPeerId);
+        return new RuntimePeerActionResult(true, "ok");
+    }
+
+    private static string ResolveCardTeam(string? requestedTeam, string actorPeerId)
+    {
+        if (!string.IsNullOrWhiteSpace(requestedTeam))
+        {
+            return requestedTeam.Trim().ToLowerInvariant();
+        }
+
+        return actorPeerId.Contains("red", StringComparison.OrdinalIgnoreCase) ? "red" : "blue";
+    }
+
+    private static string OpponentTeam(string team)
+    {
+        return string.Equals(team, "blue", StringComparison.OrdinalIgnoreCase) ? "red" : "blue";
+    }
+
     private bool TryGetCell(TacticalActionRequest request, out int x, out int y, out string? error)
     {
         x = request.X ?? -1;
@@ -586,6 +824,32 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
             Turn: state.Turn,
             PartitionedPeers: _partitionedPeers.OrderBy(peer => peer, StringComparer.OrdinalIgnoreCase).ToArray(),
             QueuedOps: _queuedActionsByPeer
+                .Where(pair => pair.Value.Count > 0)
+                .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(pair => new PeerQueueDepthDto(pair.Key, pair.Value.Count))
+                .ToArray(),
+            UpdatedAtUtc: state.UpdatedAtUtc
+        );
+    }
+
+    private CardBattleStateResponse ToCardBattleResponse(CardBattleState state)
+    {
+        return new CardBattleStateResponse(
+            Turn: state.Turn,
+            ActiveTeam: state.ActiveTeam,
+            Players: state.Players
+                .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(pair => new CardBattlePlayerStateDto(
+                    Team: pair.Key,
+                    Hp: pair.Value.Hp,
+                    Energy: pair.Value.Energy,
+                    DeckCount: pair.Value.Deck.Count,
+                    DiscardCount: pair.Value.Discard.Count,
+                    Hand: pair.Value.Hand.ToArray()
+                ))
+                .ToArray(),
+            PartitionedPeers: _partitionedPeers.OrderBy(peer => peer, StringComparer.OrdinalIgnoreCase).ToArray(),
+            QueuedOps: _queuedCardActionsByPeer
                 .Where(pair => pair.Value.Count > 0)
                 .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
                 .Select(pair => new PeerQueueDepthDto(pair.Key, pair.Value.Count))
@@ -641,6 +905,51 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         if (!dispatch.IsSuccess)
         {
             AddLocalEvent("tactical", "persist-failed", dispatch.Message, null);
+        }
+    }
+
+    private void PersistCardBattleState()
+    {
+        if (!EnsureEngine())
+        {
+            return;
+        }
+
+        if (!_peers.Values.Any(peer => peer.Online))
+        {
+            var bootstrap = ConnectPeer("alpha");
+            if (!bootstrap.IsSuccess)
+            {
+                AddLocalEvent("card-battle", "persist-skip", "Unable to bootstrap runtime peer for card battle persistence", null);
+                return;
+            }
+        }
+
+        var value = JsonSerializer.SerializeToNode(new
+        {
+            turn = _cardBattleState.Turn,
+            activeTeam = _cardBattleState.ActiveTeam,
+            players = _cardBattleState.Players,
+            updatedAtUtc = _cardBattleState.UpdatedAtUtc
+        }) ?? JsonValue.Create((string?)null)!;
+
+        var envelope = SerializeEnvelope(
+            DemoRoomId,
+            new JsonObject
+            {
+                ["MapSet"] = new JsonObject
+                {
+                    ["namespace"] = "card-battle",
+                    ["key"] = "state-v1",
+                    ["value"] = value
+                }
+            }
+        );
+
+        var dispatch = DispatchCommand(envelope);
+        if (!dispatch.IsSuccess)
+        {
+            AddLocalEvent("card-battle", "persist-failed", dispatch.Message, null);
         }
     }
 
@@ -894,6 +1203,46 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
             };
 
             return new TacticalState(rows, cols, terrain, fog, tokens, [], [], 1, DateTimeOffset.UtcNow);
+        }
+    }
+
+    private sealed record CardBattleParticipantState(
+        int Hp,
+        int Energy,
+        List<CardBattleCardDto> Deck,
+        List<CardBattleCardDto> Hand,
+        List<CardBattleCardDto> Discard
+    );
+
+    private sealed record CardBattleState(
+        int Turn,
+        string ActiveTeam,
+        Dictionary<string, CardBattleParticipantState> Players,
+        DateTimeOffset UpdatedAtUtc
+    )
+    {
+        public static CardBattleState CreateDefault()
+        {
+            static List<CardBattleCardDto> BuildDeck(string prefix)
+            {
+                var cards = new List<CardBattleCardDto>();
+                for (var i = 0; i < 4; i++)
+                {
+                    cards.Add(new CardBattleCardDto($"{prefix}-strike-{i}", "Strike", "damage", 4, 1));
+                    cards.Add(new CardBattleCardDto($"{prefix}-blast-{i}", "Blast", "damage", 6, 2));
+                    cards.Add(new CardBattleCardDto($"{prefix}-mend-{i}", "Mend", "heal", 3, 1));
+                }
+
+                return cards;
+            }
+
+            var players = new Dictionary<string, CardBattleParticipantState>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["blue"] = new CardBattleParticipantState(30, 3, BuildDeck("blue"), [], []),
+                ["red"] = new CardBattleParticipantState(30, 3, BuildDeck("red"), [], [])
+            };
+
+            return new CardBattleState(1, "blue", players, DateTimeOffset.UtcNow);
         }
     }
 

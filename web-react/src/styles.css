@@ -818,6 +818,58 @@ body {
   min-height: 28px;
 }
 
+.card-battle-board {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.7rem;
+}
+
+.card-team-panel {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.68);
+  padding: 0.55rem 0.65rem;
+}
+
+.card-team-panel h3 {
+  margin: 0 0 0.35rem;
+}
+
+.card-team-panel p {
+  margin: 0.15rem 0;
+}
+
+.card-hand-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.55rem;
+}
+
+.card-tile {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  text-align: left;
+  padding: 0.55rem 0.6rem;
+  display: grid;
+  gap: 0.2rem;
+  cursor: pointer;
+}
+
+.card-tile.selected {
+  border-color: rgba(127, 29, 21, 0.38);
+  background: rgba(198, 64, 45, 0.12);
+}
+
+.card-tile strong {
+  font-size: 0.92rem;
+}
+
+.card-tile span,
+.card-tile small {
+  color: var(--ink-soft);
+}
+
 @media (max-width: 1120px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -837,6 +889,10 @@ body {
   }
 
   .replay-metrics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .card-battle-board {
     grid-template-columns: 1fr;
   }
 }

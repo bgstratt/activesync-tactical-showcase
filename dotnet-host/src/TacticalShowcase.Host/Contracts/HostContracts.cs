@@ -96,6 +96,32 @@ public sealed record PeerQueueDepthDto(string PeerId, int Count);
 
 public sealed record TacticalCellWriteDto(int X, int Y);
 
+public sealed record CardBattleCardDto(
+    string Id,
+    string Name,
+    string EffectType,
+    int Amount,
+    int Cost
+);
+
+public sealed record CardBattlePlayerStateDto(
+    string Team,
+    int Hp,
+    int Energy,
+    int DeckCount,
+    int DiscardCount,
+    IReadOnlyList<CardBattleCardDto> Hand
+);
+
+public sealed record CardBattleStateResponse(
+    int Turn,
+    string ActiveTeam,
+    IReadOnlyList<CardBattlePlayerStateDto> Players,
+    IReadOnlyList<string> PartitionedPeers,
+    IReadOnlyList<PeerQueueDepthDto> QueuedOps,
+    DateTimeOffset UpdatedAtUtc
+);
+
 public sealed record TacticalActionRequest(
     string Action,
     int? X,
@@ -106,6 +132,8 @@ public sealed record TacticalActionRequest(
     string? Label,
     string? ActorPeerId,
     string? TargetPeerId,
+    string? CardId,
+    string? TargetTeam,
     int? TargetX,
     int? TargetY,
     bool? Enabled,
@@ -113,3 +141,5 @@ public sealed record TacticalActionRequest(
 );
 
 public sealed record TacticalActionResponse(bool Ok, string Message, TacticalBoardStateResponse State);
+
+public sealed record CardBattleActionResponse(bool Ok, string Message, CardBattleStateResponse State);

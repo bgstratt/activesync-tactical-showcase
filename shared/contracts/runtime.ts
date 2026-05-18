@@ -109,6 +109,8 @@ export interface TacticalActionRequest {
   label?: string;
   actorPeerId?: string;
   targetPeerId?: string;
+  cardId?: string;
+  targetTeam?: "blue" | "red";
   targetX?: number;
   targetY?: number;
   enabled?: boolean;
@@ -119,4 +121,39 @@ export interface TacticalActionResponse {
   ok: boolean;
   message: string;
   state: TacticalBoardState;
+}
+
+export interface CardBattleCard {
+  id: string;
+  name: string;
+  effectType: "damage" | "heal";
+  amount: number;
+  cost: number;
+}
+
+export interface CardBattlePlayerState {
+  team: "blue" | "red";
+  hp: number;
+  energy: number;
+  deckCount: number;
+  discardCount: number;
+  hand: CardBattleCard[];
+}
+
+export interface CardBattleState {
+  turn: number;
+  activeTeam: "blue" | "red";
+  players: CardBattlePlayerState[];
+  partitionedPeers: string[];
+  queuedOps: Array<{
+    peerId: string;
+    count: number;
+  }>;
+  updatedAtUtc: string;
+}
+
+export interface CardBattleActionResponse {
+  ok: boolean;
+  message: string;
+  state: CardBattleState;
 }
