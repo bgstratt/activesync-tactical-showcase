@@ -52,6 +52,14 @@ export interface PeerActionResponse {
   message: string;
 }
 
+export interface DemoScenarioRunResponse {
+  ok: boolean;
+  scenarioId: string;
+  mode: string;
+  message: string;
+  completedAtUtc: string;
+}
+
 export interface TacticalToken {
   id: string;
   name: string;

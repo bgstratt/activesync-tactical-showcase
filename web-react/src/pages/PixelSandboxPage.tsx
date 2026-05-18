@@ -4,7 +4,8 @@ import {
   connectPeer,
   fetchReplicationEvents,
   fetchReplicationTopology,
-  fetchTacticalState
+  fetchTacticalState,
+  runDemoScenario
 } from "../app/hostClient";
 import type { PeerStatus, ReplayEventItem, TacticalBoardState } from "../../../shared/contracts/runtime";
 
@@ -236,6 +237,27 @@ export function PixelSandboxPage() {
     }
   }
 
+  async function runScenario() {
+    setRunningBurst(true);
+    try {
+      const result = await runDemoScenario("pixel.burst-partition");
+      const [snapshot, replay, topology] = await Promise.all([
+        fetchTacticalState(),
+        fetchReplicationEvents(200),
+        fetchReplicationTopology()
+      ]);
+      setState(snapshot);
+      setPeers(topology.peers);
+      setEvents(replay.events.filter((event) => event.stream === "tactical" || event.type === "queued" || event.type === "replay"));
+      setBurstSummary(result.message);
+      setHostError(null);
+    } catch (error) {
+      setHostError(error instanceof Error ? error.message : "Unable to run pixel scenario");
+    } finally {
+      setRunningBurst(false);
+    }
+  }
+
   function clearBenchmarks() {
     setBurstSamples([]);
     setPendingDrain(null);
@@ -373,6 +395,9 @@ export function PixelSandboxPage() {
                 </label>
                 <button type="button" className="action-btn tactical-btn" onClick={() => void runBurst()} disabled={runningBurst}>
                   {runningBurst ? "Running..." : "Run Burst"}
+                </button>
+                <button type="button" className="action-btn tactical-btn" onClick={() => void runScenario()} disabled={runningBurst}>
+                  Run Scenario
                 </button>
               </div>
             </div>

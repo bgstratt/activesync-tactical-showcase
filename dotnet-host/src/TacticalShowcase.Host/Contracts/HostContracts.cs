@@ -51,7 +51,17 @@ public sealed record ReplayEventItem(
 
 public sealed record PeerActionRequest(string PeerId);
 
+public sealed record DemoScenarioRunRequest(string ScenarioId);
+
 public sealed record PeerActionResponse(bool Ok, string Message);
+
+public sealed record DemoScenarioRunResponse(
+    bool Ok,
+    string ScenarioId,
+    string Mode,
+    string Message,
+    DateTimeOffset CompletedAtUtc
+);
 
 public sealed record TacticalTokenDto(
     string Id,

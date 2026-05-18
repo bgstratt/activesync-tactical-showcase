@@ -15,6 +15,7 @@ public interface IRuntimeReplicationService
     TacticalActionResponse ApplyTacticalAction(TacticalActionRequest request);
     CardBattleStateResponse GetCardBattleState(string? viewerPeerId = null, string? perspective = null);
     CardBattleActionResponse ApplyCardBattleAction(TacticalActionRequest request);
+    DemoScenarioRunResponse RunDemoScenario(string scenarioId);
 }
 
 public sealed record RuntimePeerActionResult(bool IsSuccess, string Message);
@@ -349,6 +350,305 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
 
             return new CardBattleActionResponse(result.IsSuccess, result.Message, ToCardBattleResponse(_cardBattleState, actorPeerId, null));
         }
+    }
+
+    public DemoScenarioRunResponse RunDemoScenario(string scenarioId)
+    {
+        if (string.IsNullOrWhiteSpace(scenarioId))
+        {
+            return new DemoScenarioRunResponse(false, "", "unknown", "scenarioId is required", DateTimeOffset.UtcNow);
+        }
+
+        lock (_sync)
+        {
+            var normalized = scenarioId.Trim().ToLowerInvariant();
+            RuntimePeerActionResult result;
+            var mode = "unknown";
+
+            switch (normalized)
+            {
+                case "tactical.partition-replay":
+                    mode = "tactical";
+                    result = RunTacticalPartitionReplayScenario();
+                    break;
+                case "pixel.burst-partition":
+                    mode = "pixel";
+                    result = RunPixelBurstPartitionScenario();
+                    break;
+                case "dungeon.trigger-reconnect":
+                    mode = "dungeon";
+                    result = RunDungeonTriggerReconnectScenario();
+                    break;
+                case "card.private-turn":
+                    mode = "card-battle";
+                    result = RunCardPrivateTurnScenario();
+                    break;
+                default:
+                    result = new RuntimePeerActionResult(false, $"Unknown scenario '{scenarioId}'");
+                    break;
+            }
+
+            AddLocalEvent("scenario", result.IsSuccess ? "run" : "run-failed", $"{normalized}: {result.Message}", "scenario");
+            return new DemoScenarioRunResponse(result.IsSuccess, normalized, mode, result.Message, DateTimeOffset.UtcNow);
+        }
+    }
+
+    private RuntimePeerActionResult RunTacticalPartitionReplayScenario()
+    {
+        EnsurePeerRegistered("alpha");
+
+        var reset = ExecuteImmediateTacticalAction(BuildAction(action: "reset"), "scenario");
+        if (!reset.IsSuccess)
+        {
+            return reset;
+        }
+
+        var partition = ApplyPartitionChange(BuildAction(action: "set-partition", targetPeerId: "alpha", enabled: true), "scenario");
+        if (!partition.IsSuccess)
+        {
+            return partition;
+        }
+
+        QueueTacticalAction("alpha", BuildAction(action: "terrain", x: 2, y: 2, value: "wall", actorPeerId: "alpha"));
+        QueueTacticalAction("alpha", BuildAction(action: "token-add", team: "blue", actorPeerId: "alpha"));
+        QueueTacticalAction("alpha", BuildAction(action: "ping", x: 2, y: 2, label: "scenario-ping", actorPeerId: "alpha"));
+
+        var reconnect = ApplyPartitionChange(BuildAction(action: "set-partition", targetPeerId: "alpha", enabled: false), "scenario");
+        if (!reconnect.IsSuccess)
+        {
+            return reconnect;
+        }
+
+        return new RuntimePeerActionResult(true, "Tactical partition/replay scenario complete");
+    }
+
+    private RuntimePeerActionResult RunPixelBurstPartitionScenario()
+    {
+        EnsurePeerRegistered("bravo");
+
+        var reset = ExecuteImmediateTacticalAction(BuildAction(action: "reset"), "scenario");
+        if (!reset.IsSuccess)
+        {
+            return reset;
+        }
+
+        var partition = ApplyPartitionChange(BuildAction(action: "set-partition", targetPeerId: "bravo", enabled: true), "scenario");
+        if (!partition.IsSuccess)
+        {
+            return partition;
+        }
+
+        var cells = Enumerable.Range(0, 36)
+            .Select(i => new TacticalCellWriteDto((i * 3) % _tacticalState.Cols, (i * 5) % _tacticalState.Rows))
+            .ToArray();
+
+        QueueTacticalAction("bravo", BuildAction(action: "terrain-batch", value: "difficult", cells: cells, actorPeerId: "bravo"));
+
+        var reconnect = ApplyPartitionChange(BuildAction(action: "set-partition", targetPeerId: "bravo", enabled: false), "scenario");
+        if (!reconnect.IsSuccess)
+        {
+            return reconnect;
+        }
+
+        return new RuntimePeerActionResult(true, "Pixel burst/partition scenario complete");
+    }
+
+    private RuntimePeerActionResult RunDungeonTriggerReconnectScenario()
+    {
+        EnsurePeerRegistered("builder");
+
+        var reset = ExecuteImmediateTacticalAction(BuildAction(action: "reset"), "builder");
+        if (!reset.IsSuccess)
+        {
+            return reset;
+        }
+
+        var paintRoom = ExecuteImmediateTacticalAction(BuildAction(action: "terrain", x: 4, y: 4, value: "room"), "builder");
+        if (!paintRoom.IsSuccess)
+        {
+            return paintRoom;
+        }
+
+        var paintTrap = ExecuteImmediateTacticalAction(BuildAction(action: "terrain", x: 8, y: 8, value: "trap"), "builder");
+        if (!paintTrap.IsSuccess)
+        {
+            return paintTrap;
+        }
+
+        var link = ExecuteImmediateTacticalAction(
+            BuildAction(action: "link-trigger", x: 4, y: 4, targetX: 8, targetY: 8, label: "scenario-trigger"),
+            "builder"
+        );
+        if (!link.IsSuccess)
+        {
+            return link;
+        }
+
+        var partition = ApplyPartitionChange(BuildAction(action: "set-partition", targetPeerId: "builder", enabled: true), "scenario");
+        if (!partition.IsSuccess)
+        {
+            return partition;
+        }
+
+        QueueTacticalAction("builder", BuildAction(action: "terrain", x: 6, y: 6, value: "door", actorPeerId: "builder"));
+
+        var reconnect = ApplyPartitionChange(BuildAction(action: "set-partition", targetPeerId: "builder", enabled: false), "scenario");
+        if (!reconnect.IsSuccess)
+        {
+            return reconnect;
+        }
+
+        return new RuntimePeerActionResult(true, "Dungeon trigger/reconnect scenario complete");
+    }
+
+    private RuntimePeerActionResult RunCardPrivateTurnScenario()
+    {
+        EnsurePeerRegistered("blue-1");
+        EnsurePeerRegistered("red-1");
+
+        var reset = ExecuteImmediateCardAction(BuildAction(action: "card-reset", actorPeerId: "blue-1"), "blue-1");
+        if (!reset.IsSuccess)
+        {
+            return reset;
+        }
+
+        var drawBlue = ExecuteImmediateCardAction(BuildAction(action: "card-draw", team: "blue", actorPeerId: "blue-1"), "blue-1");
+        if (!drawBlue.IsSuccess)
+        {
+            return drawBlue;
+        }
+
+        var endBlue = ExecuteImmediateCardAction(BuildAction(action: "card-end-turn", team: "blue", actorPeerId: "blue-1"), "blue-1");
+        if (!endBlue.IsSuccess)
+        {
+            return endBlue;
+        }
+
+        var partition = ApplyPartitionChange(BuildAction(action: "set-partition", targetPeerId: "red-1", enabled: true), "scenario");
+        if (!partition.IsSuccess)
+        {
+            return partition;
+        }
+
+        QueueCardAction("red-1", BuildAction(action: "card-draw", team: "red", actorPeerId: "red-1"));
+
+        var reconnect = ApplyPartitionChange(BuildAction(action: "set-partition", targetPeerId: "red-1", enabled: false), "scenario");
+        if (!reconnect.IsSuccess)
+        {
+            return reconnect;
+        }
+
+        return new RuntimePeerActionResult(true, "Card private-turn scenario complete");
+    }
+
+    private RuntimePeerActionResult ExecuteImmediateTacticalAction(TacticalActionRequest request, string actorPeerId)
+    {
+        var action = request.Action.Trim().ToLowerInvariant();
+        var result = action switch
+        {
+            "terrain" => ApplyTerrain(request, actorPeerId),
+            "terrain-batch" => ApplyTerrainBatch(request, actorPeerId),
+            "fog" => ApplyFog(request, actorPeerId),
+            "ping" => ApplyPing(request, actorPeerId),
+            "link-trigger" => ApplyLinkTrigger(request, actorPeerId),
+            "unlink-trigger" => ApplyUnlinkTrigger(request, actorPeerId),
+            "erase" => ApplyErase(request, actorPeerId),
+            "token-move" => ApplyTokenMove(request, actorPeerId),
+            "token-add" => ApplyTokenAdd(request, actorPeerId),
+            "advance-turn" => ApplyAdvanceTurn(actorPeerId),
+            "reset" => ApplyReset(actorPeerId),
+            _ => new RuntimePeerActionResult(false, $"Unsupported action '{request.Action}'")
+        };
+
+        if (result.IsSuccess)
+        {
+            _tacticalState = _tacticalState with { UpdatedAtUtc = DateTimeOffset.UtcNow };
+            PersistTacticalState();
+        }
+
+        return result;
+    }
+
+    private RuntimePeerActionResult ExecuteImmediateCardAction(TacticalActionRequest request, string actorPeerId)
+    {
+        var action = request.Action.Trim().ToLowerInvariant();
+        var result = action switch
+        {
+            "card-draw" => ApplyCardDraw(request, actorPeerId),
+            "card-play" => ApplyCardPlay(request, actorPeerId),
+            "card-end-turn" => ApplyCardEndTurn(actorPeerId),
+            "card-reset" => ApplyCardReset(actorPeerId),
+            _ => new RuntimePeerActionResult(false, $"Unsupported action '{request.Action}'")
+        };
+
+        if (result.IsSuccess)
+        {
+            _cardBattleState = _cardBattleState with { UpdatedAtUtc = DateTimeOffset.UtcNow };
+            PersistCardBattleState();
+        }
+
+        return result;
+    }
+
+    private void QueueTacticalAction(string peerId, TacticalActionRequest request)
+    {
+        if (!_queuedActionsByPeer.TryGetValue(peerId, out var queue))
+        {
+            queue = [];
+            _queuedActionsByPeer[peerId] = queue;
+        }
+
+        queue.Add(request);
+        AddLocalEvent("tactical", "queued", $"Queued '{request.Action}' for scripted scenario", peerId);
+    }
+
+    private void QueueCardAction(string peerId, TacticalActionRequest request)
+    {
+        if (!_queuedCardActionsByPeer.TryGetValue(peerId, out var queue))
+        {
+            queue = [];
+            _queuedCardActionsByPeer[peerId] = queue;
+        }
+
+        queue.Add(request);
+        AddLocalEvent("card-battle", "queued", $"Queued '{request.Action}' for scripted scenario", peerId);
+    }
+
+    private static TacticalActionRequest BuildAction(
+        string action,
+        int? x = null,
+        int? y = null,
+        string? value = null,
+        string? tokenId = null,
+        string? team = null,
+        string? label = null,
+        string? actorPeerId = null,
+        string? targetPeerId = null,
+        string? cardId = null,
+        string? targetTeam = null,
+        int? targetX = null,
+        int? targetY = null,
+        bool? enabled = null,
+        IReadOnlyList<TacticalCellWriteDto>? cells = null
+    )
+    {
+        return new TacticalActionRequest(
+            Action: action,
+            X: x,
+            Y: y,
+            Value: value,
+            TokenId: tokenId,
+            Team: team,
+            Label: label,
+            ActorPeerId: actorPeerId,
+            TargetPeerId: targetPeerId,
+            CardId: cardId,
+            TargetTeam: targetTeam,
+            TargetX: targetX,
+            TargetY: targetY,
+            Enabled: enabled,
+            Cells: cells
+        );
     }
 
     private RuntimePeerActionResult ApplyPartitionChange(TacticalActionRequest request, string actorPeerId)

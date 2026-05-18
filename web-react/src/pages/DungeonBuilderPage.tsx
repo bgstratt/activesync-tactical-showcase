@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { applyTacticalAction, fetchReplicationEvents, fetchTacticalState } from "../app/hostClient";
+import { applyTacticalAction, fetchReplicationEvents, fetchTacticalState, runDemoScenario } from "../app/hostClient";
 import type { ReplayEventItem, TacticalActionRequest, TacticalBoardState, TacticalToken } from "../../../shared/contracts/runtime";
 
 type PaintType = "room" | "wall" | "door" | "trap" | "loot";
@@ -98,6 +98,29 @@ export function DungeonBuilderPage() {
       setHostError(result.ok ? null : result.message);
     } catch (error) {
       setHostError(error instanceof Error ? error.message : "Dungeon action failed");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function runScenario() {
+    setIsBusy(true);
+    try {
+      const result = await runDemoScenario("dungeon.trigger-reconnect");
+      const [snapshot, replay] = await Promise.all([fetchTacticalState(), fetchReplicationEvents(120)]);
+      setState(snapshot);
+      const modeEvents = replay.events.filter(
+        (event) => event.stream === "tactical" && ["terrain", "token-add", "token-move", "link-trigger", "unlink-trigger", "erase", "replay"].includes(event.type)
+      );
+      setEvents(modeEvents);
+      setHostError(null);
+      setLinkStart(null);
+      setSelectedTokenId(snapshot.tokens[0]?.id ?? null);
+      if (result.message) {
+        setHostError(null);
+      }
+    } catch (error) {
+      setHostError(error instanceof Error ? error.message : "Unable to run dungeon scenario");
     } finally {
       setIsBusy(false);
     }
@@ -203,6 +226,9 @@ export function DungeonBuilderPage() {
             </div>
 
             <div className="action-row">
+              <button type="button" className="action-btn tactical-btn" onClick={() => void runScenario()} disabled={isBusy}>
+                Run Scenario
+              </button>
               <button type="button" className="action-btn tactical-btn" onClick={() => void dispatchAction({ action: "reset", actorPeerId: "builder" })}>
                 Reset Dungeon
               </button>

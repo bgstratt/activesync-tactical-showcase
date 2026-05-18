@@ -5,7 +5,8 @@ import {
   disconnectPeer,
   fetchReplicationEvents,
   fetchReplicationTopology,
-  fetchTacticalState
+  fetchTacticalState,
+  runDemoScenario
 } from "../app/hostClient";
 import type {
   PeerStatus,
@@ -168,6 +169,21 @@ export function TacticalStrategyPage() {
     }
   }
 
+  async function handleRunScenario() {
+    setIsBusy(true);
+    try {
+      const result = await runDemoScenario("tactical.partition-replay");
+      setPeerMessage(result.message);
+      const snapshot = await fetchTacticalState();
+      setState(snapshot);
+      await refreshRuntimeViews();
+    } catch (error) {
+      setPeerMessage(error instanceof Error ? error.message : "Unable to run tactical scenario");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   function clearBoard() {
     void dispatchAction({ action: "reset" });
   }
@@ -269,6 +285,9 @@ export function TacticalStrategyPage() {
             <div className="action-row">
               <button type="button" className="action-btn tactical-btn" onClick={advanceTurn}>
                 Advance Turn ({state.turn})
+              </button>
+              <button type="button" className="action-btn tactical-btn" onClick={() => void handleRunScenario()} disabled={isBusy}>
+                Run Scenario
               </button>
               <button type="button" className="action-btn tactical-btn" onClick={clearBoard}>
                 Reset Board

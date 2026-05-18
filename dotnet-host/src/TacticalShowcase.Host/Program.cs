@@ -88,4 +88,9 @@ app.MapPost("/api/card-battle/action", (IRuntimeReplicationService runtime, Tact
     return Results.Ok(runtime.ApplyCardBattleAction(request));
 });
 
+app.MapPost("/api/scenarios/run", (IRuntimeReplicationService runtime, DemoScenarioRunRequest request) =>
+{
+    return Results.Ok(runtime.RunDemoScenario(request.ScenarioId));
+});
+
 app.Run();

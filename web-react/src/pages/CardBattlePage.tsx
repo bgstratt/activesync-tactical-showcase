@@ -5,7 +5,8 @@ import {
   connectPeer,
   fetchCardBattleState,
   fetchReplicationEvents,
-  fetchReplicationTopology
+  fetchReplicationTopology,
+  runDemoScenario
 } from "../app/hostClient";
 import type { CardBattleCard, CardBattlePerspective, CardBattleState, PeerStatus, ReplayEventItem } from "../../../shared/contracts/runtime";
 
@@ -170,6 +171,24 @@ export function CardBattlePage() {
     }
   }
 
+  async function runScenario() {
+    try {
+      const result = await runDemoScenario("card.private-turn");
+      const [snapshot, replay, topology] = await Promise.all([
+        fetchCardBattleState(activePeerId, perspective),
+        fetchReplicationEvents(120, activePeerId, perspective),
+        fetchReplicationTopology()
+      ]);
+      setState(snapshot);
+      setPeers(topology.peers);
+      setEvents(replay.events.filter((event) => event.stream === "card-battle" || event.type === "queued" || event.type === "replay"));
+      setMessage(result.message);
+      setHostError(null);
+    } catch (error) {
+      setHostError(error instanceof Error ? error.message : "Unable to run card scenario");
+    }
+  }
+
   return (
     <section className="feature-page tactical-page card-battle-page">
       <header className="feature-header tactical-header">
@@ -209,6 +228,9 @@ export function CardBattlePage() {
               <div className="action-row">
                 <button type="button" className="action-btn tactical-btn" onClick={() => void addPeer()}>
                   Add Peer
+                </button>
+                <button type="button" className="action-btn tactical-btn" onClick={() => void runScenario()}>
+                  Run Scenario
                 </button>
                 <button type="button" className="action-btn tactical-btn" onClick={() => void runAction("card-draw")} disabled={!canAct}>
                   Draw Card

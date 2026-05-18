@@ -2,6 +2,7 @@ import type {
   CardBattleActionResponse,
   CardBattlePerspective,
   CardBattleState,
+  DemoScenarioRunResponse,
   HostHealthResponse,
   PeerActionResponse,
   ReplayEventsResponse,
@@ -74,6 +75,18 @@ export async function disconnectPeer(peerId: string): Promise<PeerActionResponse
     body: JSON.stringify({ peerId })
   });
   return parseResponse<PeerActionResponse>(response);
+}
+
+export async function runDemoScenario(scenarioId: string): Promise<DemoScenarioRunResponse> {
+  const response = await fetch(`${getBaseUrl()}/api/scenarios/run`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ scenarioId })
+  });
+
+  return parseResponse<DemoScenarioRunResponse>(response);
 }
 
 export async function fetchTacticalState(): Promise<TacticalBoardState> {
