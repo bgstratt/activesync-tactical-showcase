@@ -236,6 +236,58 @@ export function PixelSandboxPage() {
     }
   }
 
+  function clearBenchmarks() {
+    setBurstSamples([]);
+    setPendingDrain(null);
+    setBurstSummary("Benchmark samples cleared");
+  }
+
+  function exportBenchmarksJson() {
+    if (burstSamples.length === 0) {
+      setBurstSummary("No benchmark samples to export");
+      return;
+    }
+
+    const payload = JSON.stringify(
+      {
+        exportedAtUtc: new Date().toISOString(),
+        activePeerId,
+        brush,
+        brushRadius,
+        burstOps,
+        samples: burstSamples
+      },
+      null,
+      2
+    );
+
+    downloadTextFile(`pixel-benchmark-${Date.now()}.json`, payload, "application/json;charset=utf-8");
+    setBurstSummary(`Exported ${burstSamples.length} benchmark samples as JSON`);
+  }
+
+  function exportBenchmarksCsv() {
+    if (burstSamples.length === 0) {
+      setBurstSummary("No benchmark samples to export");
+      return;
+    }
+
+    const header = "id,timestampUtc,latencyMs,writeCount,opsPerSec,queueDrainMs";
+    const rows = burstSamples.map((sample) =>
+      [
+        sample.id,
+        sample.timestampUtc,
+        sample.latencyMs,
+        sample.writeCount,
+        sample.opsPerSec,
+        sample.queueDrainMs === null ? "" : sample.queueDrainMs
+      ].join(",")
+    );
+
+    const csv = [header, ...rows].join("\n");
+    downloadTextFile(`pixel-benchmark-${Date.now()}.csv`, csv, "text/csv;charset=utf-8");
+    setBurstSummary(`Exported ${burstSamples.length} benchmark samples as CSV`);
+  }
+
   return (
     <section className="feature-page tactical-page pixel-page">
       <header className="feature-header tactical-header">
@@ -365,6 +417,17 @@ export function PixelSandboxPage() {
 
           <h2>Burst Benchmark</h2>
           <div className="benchmark-box">
+            <div className="benchmark-actions">
+              <button type="button" className="action-btn tactical-btn" onClick={exportBenchmarksJson}>
+                Export JSON
+              </button>
+              <button type="button" className="action-btn tactical-btn" onClick={exportBenchmarksCsv}>
+                Export CSV
+              </button>
+              <button type="button" className="action-btn tactical-btn" onClick={clearBenchmarks}>
+                Clear
+              </button>
+            </div>
             <div className="benchmark-grid">
               <div>
                 <strong>Latency p50</strong>
@@ -414,6 +477,18 @@ export function PixelSandboxPage() {
       </div>
     </section>
   );
+}
+
+function downloadTextFile(fileName: string, content: string, mimeType: string): void {
+  const blob = new Blob([content], { type: mimeType });
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 }
 
 function percentile(values: number[], p: number): number | null {

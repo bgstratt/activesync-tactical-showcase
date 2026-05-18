@@ -651,6 +651,12 @@ body {
   gap: 0.5rem;
 }
 
+.benchmark-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
 .benchmark-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
