@@ -31,11 +31,14 @@ const fallbackState: TacticalBoardState = {
   tokens: [],
   pings: [],
   turn: 1,
+  partitionedPeers: [],
+  queuedOps: [],
   updatedAtUtc: new Date().toISOString()
 };
 
 export function TacticalStrategyPage() {
   const [state, setState] = useState<TacticalBoardState>(fallbackState);
+  const [activePeerId, setActivePeerId] = useState("alpha");
   const [tool, setTool] = useState<ToolMode>("terrain");
   const [selectedTerrain, setSelectedTerrain] = useState<TerrainType>("wall");
   const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
@@ -72,6 +75,10 @@ export function TacticalStrategyPage() {
           if (snapshot.tokens.length > 0) {
             setSelectedTokenId(snapshot.tokens[0].id);
           }
+
+          if (topology.peers.length > 0 && !topology.peers.some((peer) => peer.peerId === activePeerId)) {
+            setActivePeerId(topology.peers[0].peerId);
+          }
         }
       } catch (error) {
         if (!isCanceled) {
@@ -94,7 +101,10 @@ export function TacticalStrategyPage() {
   async function dispatchAction(action: TacticalActionRequest) {
     setIsBusy(true);
     try {
-      const result = await applyTacticalAction(action);
+      const result = await applyTacticalAction({
+        actorPeerId: activePeerId,
+        ...action
+      });
       setState(result.state);
       setHostError(result.ok ? null : result.message);
       await refreshRuntimeViews();
@@ -116,6 +126,7 @@ export function TacticalStrategyPage() {
     try {
       const response = await connectPeer(peerId);
       setPeerMessage(response.message);
+      setActivePeerId(peerId);
       await refreshRuntimeViews();
     } catch (error) {
       setPeerMessage(error instanceof Error ? error.message : "Peer connect failed");
@@ -132,6 +143,25 @@ export function TacticalStrategyPage() {
       await refreshRuntimeViews();
     } catch (error) {
       setPeerMessage(error instanceof Error ? error.message : "Peer disconnect failed");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handlePartitionToggle(enabled: boolean) {
+    setIsBusy(true);
+    try {
+      const response = await applyTacticalAction({
+        action: "set-partition",
+        actorPeerId: activePeerId,
+        targetPeerId: activePeerId,
+        enabled
+      });
+      setState(response.state);
+      setPeerMessage(response.message);
+      await refreshRuntimeViews();
+    } catch (error) {
+      setPeerMessage(error instanceof Error ? error.message : "Unable to update partition state");
     } finally {
       setIsBusy(false);
     }
@@ -299,6 +329,40 @@ export function TacticalStrategyPage() {
           </div>
 
           <h2>Peers</h2>
+          <div className="tool-group">
+            <span>Active Peer POV</span>
+            <select
+              className="peer-select"
+              value={activePeerId}
+              onChange={(event) => setActivePeerId(event.target.value)}
+              disabled={isBusy}
+            >
+              {onlinePeers.map((peer) => (
+                <option key={peer.peerId} value={peer.peerId}>
+                  {peer.peerId} {peer.online ? "(online)" : "(offline)"}
+                </option>
+              ))}
+            </select>
+            <div className="action-row">
+              <button
+                type="button"
+                className="action-btn tactical-btn"
+                onClick={() => void handlePartitionToggle(true)}
+                disabled={isBusy || state.partitionedPeers.includes(activePeerId)}
+              >
+                Partition Active
+              </button>
+              <button
+                type="button"
+                className="action-btn tactical-btn"
+                onClick={() => void handlePartitionToggle(false)}
+                disabled={isBusy || !state.partitionedPeers.includes(activePeerId)}
+              >
+                Reconnect Active
+              </button>
+            </div>
+          </div>
+
           <div className="peer-row">
             <input
               className="peer-input"
@@ -329,6 +393,21 @@ export function TacticalStrategyPage() {
                 </button>
               </div>
             ))}
+          </div>
+
+          <h2>Convergence</h2>
+          <div className="convergence-box">
+            <p>
+              <strong>Partitioned:</strong> {state.partitionedPeers.length > 0 ? state.partitionedPeers.join(", ") : "none"}
+            </p>
+            <ul>
+              {state.queuedOps.map((entry) => (
+                <li key={entry.peerId}>
+                  {entry.peerId}: {entry.count} queued op(s)
+                </li>
+              ))}
+              {state.queuedOps.length === 0 ? <li>No queued operations</li> : null}
+            </ul>
           </div>
 
           <h2>Operation Timeline</h2>

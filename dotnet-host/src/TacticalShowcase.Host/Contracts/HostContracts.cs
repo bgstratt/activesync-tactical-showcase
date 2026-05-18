@@ -77,8 +77,12 @@ public sealed record TacticalBoardStateResponse(
     IReadOnlyList<TacticalTokenDto> Tokens,
     IReadOnlyList<TacticalPingDto> Pings,
     int Turn,
+    IReadOnlyList<string> PartitionedPeers,
+    IReadOnlyList<PeerQueueDepthDto> QueuedOps,
     DateTimeOffset UpdatedAtUtc
 );
+
+public sealed record PeerQueueDepthDto(string PeerId, int Count);
 
 public sealed record TacticalActionRequest(
     string Action,
@@ -87,7 +91,10 @@ public sealed record TacticalActionRequest(
     string? Value,
     string? TokenId,
     string? Team,
-    string? Label
+    string? Label,
+    string? ActorPeerId,
+    string? TargetPeerId,
+    bool? Enabled
 );
 
 public sealed record TacticalActionResponse(bool Ok, string Message, TacticalBoardStateResponse State);

@@ -76,6 +76,11 @@ export interface TacticalBoardState {
   tokens: TacticalToken[];
   pings: TacticalPing[];
   turn: number;
+  partitionedPeers: string[];
+  queuedOps: Array<{
+    peerId: string;
+    count: number;
+  }>;
   updatedAtUtc: string;
 }
 
@@ -87,6 +92,9 @@ export interface TacticalActionRequest {
   tokenId?: string;
   team?: "blue" | "red";
   label?: string;
+  actorPeerId?: string;
+  targetPeerId?: string;
+  enabled?: boolean;
 }
 
 export interface TacticalActionResponse {

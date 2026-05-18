@@ -28,6 +28,8 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
     private readonly Dictionary<string, PeerRuntimeState> _peers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<ulong, string> _sessionToPeer = new();
     private readonly List<ReplayEventItem> _eventLog = new();
+    private readonly HashSet<string> _partitionedPeers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<TacticalActionRequest>> _queuedActionsByPeer = new(StringComparer.OrdinalIgnoreCase);
     private TacticalState _tacticalState = TacticalState.CreateDefault();
 
     private const string DemoRoomId = "tactical-demo-session";
@@ -191,17 +193,39 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
 
         lock (_sync)
         {
+            var actorPeerId = string.IsNullOrWhiteSpace(request.ActorPeerId) ? "alpha" : request.ActorPeerId.Trim();
+            EnsurePeerRegistered(actorPeerId);
+
             var action = request.Action.Trim().ToLowerInvariant();
+            if (action == "set-partition")
+            {
+                var partitionResult = ApplyPartitionChange(request, actorPeerId);
+                return new TacticalActionResponse(partitionResult.IsSuccess, partitionResult.Message, ToTacticalResponse(_tacticalState));
+            }
+
+            if (_partitionedPeers.Contains(actorPeerId))
+            {
+                if (!_queuedActionsByPeer.TryGetValue(actorPeerId, out var queue))
+                {
+                    queue = [];
+                    _queuedActionsByPeer[actorPeerId] = queue;
+                }
+
+                queue.Add(request);
+                AddLocalEvent("tactical", "queued", $"Queued '{action}' while peer partitioned", actorPeerId);
+                return new TacticalActionResponse(true, $"Action queued for partitioned peer '{actorPeerId}'", ToTacticalResponse(_tacticalState));
+            }
+
             var result = action switch
             {
-                "terrain" => ApplyTerrain(request),
-                "fog" => ApplyFog(request),
-                "ping" => ApplyPing(request),
-                "erase" => ApplyErase(request),
-                "token-move" => ApplyTokenMove(request),
-                "token-add" => ApplyTokenAdd(request),
-                "advance-turn" => ApplyAdvanceTurn(),
-                "reset" => ApplyReset(),
+                "terrain" => ApplyTerrain(request, actorPeerId),
+                "fog" => ApplyFog(request, actorPeerId),
+                "ping" => ApplyPing(request, actorPeerId),
+                "erase" => ApplyErase(request, actorPeerId),
+                "token-move" => ApplyTokenMove(request, actorPeerId),
+                "token-add" => ApplyTokenAdd(request, actorPeerId),
+                "advance-turn" => ApplyAdvanceTurn(actorPeerId),
+                "reset" => ApplyReset(actorPeerId),
                 _ => new RuntimePeerActionResult(false, $"Unsupported action '{request.Action}'")
             };
 
@@ -212,6 +236,78 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
             }
 
             return new TacticalActionResponse(result.IsSuccess, result.Message, ToTacticalResponse(_tacticalState));
+        }
+    }
+
+    private RuntimePeerActionResult ApplyPartitionChange(TacticalActionRequest request, string actorPeerId)
+    {
+        var targetPeerId = string.IsNullOrWhiteSpace(request.TargetPeerId) ? actorPeerId : request.TargetPeerId.Trim();
+        EnsurePeerRegistered(targetPeerId);
+
+        var enabled = request.Enabled ?? true;
+        if (enabled)
+        {
+            _partitionedPeers.Add(targetPeerId);
+            AddLocalEvent("tactical", "partition", $"Partitioned peer '{targetPeerId}'", actorPeerId);
+            return new RuntimePeerActionResult(true, $"Peer '{targetPeerId}' partitioned");
+        }
+
+        _partitionedPeers.Remove(targetPeerId);
+        AddLocalEvent("tactical", "reconnect", $"Reconnected peer '{targetPeerId}'", actorPeerId);
+        ReplayQueuedPeerActions(targetPeerId);
+        return new RuntimePeerActionResult(true, $"Peer '{targetPeerId}' reconnected");
+    }
+
+    private void ReplayQueuedPeerActions(string peerId)
+    {
+        if (!_queuedActionsByPeer.TryGetValue(peerId, out var queuedActions) || queuedActions.Count == 0)
+        {
+            return;
+        }
+
+        var replayList = queuedActions.ToArray();
+        queuedActions.Clear();
+
+        foreach (var queued in replayList)
+        {
+            var action = queued.Action.Trim().ToLowerInvariant();
+            var result = action switch
+            {
+                "terrain" => ApplyTerrain(queued, peerId),
+                "fog" => ApplyFog(queued, peerId),
+                "ping" => ApplyPing(queued, peerId),
+                "erase" => ApplyErase(queued, peerId),
+                "token-move" => ApplyTokenMove(queued, peerId),
+                "token-add" => ApplyTokenAdd(queued, peerId),
+                "advance-turn" => ApplyAdvanceTurn(peerId),
+                "reset" => ApplyReset(peerId),
+                _ => new RuntimePeerActionResult(false, $"Unsupported queued action '{queued.Action}'")
+            };
+
+            if (result.IsSuccess)
+            {
+                _tacticalState = _tacticalState with { UpdatedAtUtc = DateTimeOffset.UtcNow };
+                PersistTacticalState();
+                AddLocalEvent("tactical", "replay", $"Replayed queued action '{queued.Action}'", peerId);
+            }
+            else
+            {
+                AddLocalEvent("tactical", "replay-failed", result.Message, peerId);
+            }
+        }
+    }
+
+    private void EnsurePeerRegistered(string peerId)
+    {
+        if (_peers.ContainsKey(peerId))
+        {
+            return;
+        }
+
+        var registration = ConnectPeer(peerId);
+        if (!registration.IsSuccess)
+        {
+            AddLocalEvent("tactical", "peer-register-failed", registration.Message, peerId);
         }
     }
 
@@ -241,7 +337,7 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         }
     }
 
-    private RuntimePeerActionResult ApplyTerrain(TacticalActionRequest request)
+    private RuntimePeerActionResult ApplyTerrain(TacticalActionRequest request, string actorPeerId)
     {
         if (!TryGetCell(request, out var x, out var y, out var error))
         {
@@ -255,11 +351,11 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         }
 
         _tacticalState.Terrain[y][x] = terrainValue;
-        AddLocalEvent("tactical", "terrain", $"Set ({x},{y}) to {terrainValue}", null);
+        AddLocalEvent("tactical", "terrain", $"Set ({x},{y}) to {terrainValue}", actorPeerId);
         return new RuntimePeerActionResult(true, "ok");
     }
 
-    private RuntimePeerActionResult ApplyFog(TacticalActionRequest request)
+    private RuntimePeerActionResult ApplyFog(TacticalActionRequest request, string actorPeerId)
     {
         if (!TryGetCell(request, out var x, out var y, out var error))
         {
@@ -267,11 +363,11 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         }
 
         _tacticalState.Fog[y][x] = !_tacticalState.Fog[y][x];
-        AddLocalEvent("tactical", "fog", $"Toggled fog at ({x},{y})", null);
+        AddLocalEvent("tactical", "fog", $"Toggled fog at ({x},{y})", actorPeerId);
         return new RuntimePeerActionResult(true, "ok");
     }
 
-    private RuntimePeerActionResult ApplyPing(TacticalActionRequest request)
+    private RuntimePeerActionResult ApplyPing(TacticalActionRequest request, string actorPeerId)
     {
         if (!TryGetCell(request, out var x, out var y, out var error))
         {
@@ -291,11 +387,11 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
             _tacticalState.Pings.RemoveRange(40, _tacticalState.Pings.Count - 40);
         }
 
-        AddLocalEvent("tactical", "ping", $"Pinged sector ({x},{y})", null);
+        AddLocalEvent("tactical", "ping", $"Pinged sector ({x},{y})", actorPeerId);
         return new RuntimePeerActionResult(true, "ok");
     }
 
-    private RuntimePeerActionResult ApplyErase(TacticalActionRequest request)
+    private RuntimePeerActionResult ApplyErase(TacticalActionRequest request, string actorPeerId)
     {
         if (!TryGetCell(request, out var x, out var y, out var error))
         {
@@ -307,11 +403,11 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         _tacticalState.Tokens.RemoveAll(token => token.X == x && token.Y == y);
         _tacticalState.Pings.RemoveAll(ping => ping.X == x && ping.Y == y);
 
-        AddLocalEvent("tactical", "erase", $"Cleared cell ({x},{y})", null);
+        AddLocalEvent("tactical", "erase", $"Cleared cell ({x},{y})", actorPeerId);
         return new RuntimePeerActionResult(true, "ok");
     }
 
-    private RuntimePeerActionResult ApplyTokenMove(TacticalActionRequest request)
+    private RuntimePeerActionResult ApplyTokenMove(TacticalActionRequest request, string actorPeerId)
     {
         if (string.IsNullOrWhiteSpace(request.TokenId))
         {
@@ -331,11 +427,11 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
 
         var token = _tacticalState.Tokens[index];
         _tacticalState.Tokens[index] = token with { X = x, Y = y };
-        AddLocalEvent("tactical", "token-move", $"Moved {token.Name} to ({x},{y})", token.Id);
+        AddLocalEvent("tactical", "token-move", $"Moved {token.Name} to ({x},{y})", actorPeerId);
         return new RuntimePeerActionResult(true, "ok");
     }
 
-    private RuntimePeerActionResult ApplyTokenAdd(TacticalActionRequest request)
+    private RuntimePeerActionResult ApplyTokenAdd(TacticalActionRequest request, string actorPeerId)
     {
         var team = (request.Team ?? "blue").Trim().ToLowerInvariant();
         if (team is not ("blue" or "red"))
@@ -355,21 +451,21 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
         );
 
         _tacticalState.Tokens.Add(token);
-        AddLocalEvent("tactical", "token-add", $"Added {token.Name} ({team})", token.Id);
+        AddLocalEvent("tactical", "token-add", $"Added {token.Name} ({team})", actorPeerId);
         return new RuntimePeerActionResult(true, "ok");
     }
 
-    private RuntimePeerActionResult ApplyAdvanceTurn()
+    private RuntimePeerActionResult ApplyAdvanceTurn(string actorPeerId)
     {
         _tacticalState = _tacticalState with { Turn = _tacticalState.Turn + 1 };
-        AddLocalEvent("tactical", "turn", "Advanced initiative turn", null);
+        AddLocalEvent("tactical", "turn", "Advanced initiative turn", actorPeerId);
         return new RuntimePeerActionResult(true, "ok");
     }
 
-    private RuntimePeerActionResult ApplyReset()
+    private RuntimePeerActionResult ApplyReset(string actorPeerId)
     {
         _tacticalState = TacticalState.CreateDefault();
-        AddLocalEvent("tactical", "reset", "Board reset to baseline tactical state", null);
+        AddLocalEvent("tactical", "reset", "Board reset to baseline tactical state", actorPeerId);
         return new RuntimePeerActionResult(true, "ok");
     }
 
@@ -398,6 +494,12 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
             Tokens: state.Tokens.ToArray(),
             Pings: state.Pings.ToArray(),
             Turn: state.Turn,
+            PartitionedPeers: _partitionedPeers.OrderBy(peer => peer, StringComparer.OrdinalIgnoreCase).ToArray(),
+            QueuedOps: _queuedActionsByPeer
+                .Where(pair => pair.Value.Count > 0)
+                .OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(pair => new PeerQueueDepthDto(pair.Key, pair.Value.Count))
+                .ToArray(),
             UpdatedAtUtc: state.UpdatedAtUtc
         );
     }

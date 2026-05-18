@@ -558,6 +558,13 @@ body {
   gap: 0.45rem;
 }
 
+.peer-select {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 0.42rem 0.5rem;
+  background: rgba(255, 255, 255, 0.72);
+}
+
 .peer-input {
   flex: 1;
   border: 1px solid var(--line);
@@ -585,6 +592,26 @@ body {
 .peer-item span {
   font-size: 0.86rem;
   color: var(--ink-soft);
+}
+
+.convergence-box {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.66);
+  padding: 0.5rem 0.6rem;
+}
+
+.convergence-box p {
+  margin: 0 0 0.35rem;
+  color: var(--ink-soft);
+}
+
+.convergence-box ul {
+  margin: 0;
+  padding-left: 1rem;
+  color: var(--ink-soft);
+  display: grid;
+  gap: 0.2rem;
 }
 
 .ops-list {
