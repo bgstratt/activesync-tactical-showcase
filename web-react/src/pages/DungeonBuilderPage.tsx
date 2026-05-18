@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { applyTacticalAction, fetchReplicationEvents, fetchTacticalState, runDemoScenario } from "../app/hostClient";
-import type { ReplayEventItem, TacticalActionRequest, TacticalBoardState, TacticalToken } from "../../../shared/contracts/runtime";
+import type { DemoScenarioRunResponse, ReplayEventItem, TacticalActionRequest, TacticalBoardState, TacticalToken } from "../../../shared/contracts/runtime";
 
 type PaintType = "room" | "wall" | "door" | "trap" | "loot";
 type BuilderTool = "paint" | "erase" | "token" | "link";
@@ -31,6 +31,7 @@ export function DungeonBuilderPage() {
   const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
   const [linkStart, setLinkStart] = useState<{ x: number; y: number } | null>(null);
   const [events, setEvents] = useState<ReplayEventItem[]>([]);
+  const [scenarioResult, setScenarioResult] = useState<DemoScenarioRunResponse | null>(null);
   const [hostError, setHostError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
 
@@ -107,6 +108,7 @@ export function DungeonBuilderPage() {
     setIsBusy(true);
     try {
       const result = await runDemoScenario("dungeon.trigger-reconnect");
+      setScenarioResult(result);
       const [snapshot, replay] = await Promise.all([fetchTacticalState(), fetchReplicationEvents(120)]);
       setState(snapshot);
       const modeEvents = replay.events.filter(
@@ -324,6 +326,28 @@ export function DungeonBuilderPage() {
             ))}
             {events.length === 0 ? <li className="ops-empty">No dungeon events yet.</li> : null}
           </ul>
+
+          {scenarioResult ? (
+            <>
+              <h2>Scenario Results</h2>
+              <div className="scenario-results">
+                <p className="topology-note">
+                  {scenarioResult.assertions.filter((item) => item.passed).length}/{scenarioResult.assertions.length} assertions passed
+                </p>
+                <ul className="ops-list">
+                  {scenarioResult.assertions.map((item, index) => (
+                    <li key={`${item.name}-${index}`} className={item.passed ? "scenario-pass" : "scenario-fail"}>
+                      <span className="ops-meta">{item.passed ? "PASS" : "FAIL"}</span>
+                      <span>{item.name}</span>
+                      <small>
+                        expected: {item.expected} | actual: {item.actual}
+                      </small>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </>
+          ) : null}
         </aside>
       </div>
     </section>

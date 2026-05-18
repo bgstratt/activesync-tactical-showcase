@@ -7,7 +7,7 @@ import {
   fetchTacticalState,
   runDemoScenario
 } from "../app/hostClient";
-import type { PeerStatus, ReplayEventItem, TacticalBoardState } from "../../../shared/contracts/runtime";
+import type { DemoScenarioRunResponse, PeerStatus, ReplayEventItem, TacticalBoardState } from "../../../shared/contracts/runtime";
 
 type PixelBrush = "plain" | "wall" | "difficult";
 
@@ -55,6 +55,7 @@ export function PixelSandboxPage() {
   const [burstSummary, setBurstSummary] = useState<string | null>(null);
   const [hostError, setHostError] = useState<string | null>(null);
   const [burstSamples, setBurstSamples] = useState<BurstSample[]>([]);
+  const [scenarioResult, setScenarioResult] = useState<DemoScenarioRunResponse | null>(null);
   const [pendingDrain, setPendingDrain] = useState<PendingDrainMeasurement | null>(null);
   const nextSampleId = useRef(1);
 
@@ -241,6 +242,7 @@ export function PixelSandboxPage() {
     setRunningBurst(true);
     try {
       const result = await runDemoScenario("pixel.burst-partition");
+      setScenarioResult(result);
       const [snapshot, replay, topology] = await Promise.all([
         fetchTacticalState(),
         fetchReplicationEvents(200),
@@ -498,6 +500,28 @@ export function PixelSandboxPage() {
             ))}
             {events.length === 0 ? <li className="ops-empty">No stress events yet.</li> : null}
           </ul>
+
+          {scenarioResult ? (
+            <>
+              <h2>Scenario Results</h2>
+              <div className="scenario-results">
+                <p className="topology-note">
+                  {scenarioResult.assertions.filter((item) => item.passed).length}/{scenarioResult.assertions.length} assertions passed
+                </p>
+                <ul className="ops-list">
+                  {scenarioResult.assertions.map((item, index) => (
+                    <li key={`${item.name}-${index}`} className={item.passed ? "scenario-pass" : "scenario-fail"}>
+                      <span className="ops-meta">{item.passed ? "PASS" : "FAIL"}</span>
+                      <span>{item.name}</span>
+                      <small>
+                        expected: {item.expected} | actual: {item.actual}
+                      </small>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </>
+          ) : null}
         </aside>
       </div>
     </section>

@@ -9,6 +9,7 @@ import {
   runDemoScenario
 } from "../app/hostClient";
 import type {
+  DemoScenarioRunResponse,
   PeerStatus,
   ReplayEventItem,
   TacticalActionRequest,
@@ -50,6 +51,7 @@ export function TacticalStrategyPage() {
   const [peerMessage, setPeerMessage] = useState<string | null>(null);
   const [hostError, setHostError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const [scenarioResult, setScenarioResult] = useState<DemoScenarioRunResponse | null>(null);
 
   async function refreshRuntimeViews() {
     const [replay, topology] = await Promise.all([fetchReplicationEvents(80), fetchReplicationTopology()]);
@@ -174,6 +176,7 @@ export function TacticalStrategyPage() {
     try {
       const result = await runDemoScenario("tactical.partition-replay");
       setPeerMessage(result.message);
+      setScenarioResult(result);
       const snapshot = await fetchTacticalState();
       setState(snapshot);
       await refreshRuntimeViews();
@@ -429,6 +432,28 @@ export function TacticalStrategyPage() {
               {state.queuedOps.length === 0 ? <li>No queued operations</li> : null}
             </ul>
           </div>
+
+          {scenarioResult ? (
+            <>
+              <h2>Scenario Results</h2>
+              <div className="scenario-results">
+                <p className="topology-note">
+                  {scenarioResult.assertions.filter((item) => item.passed).length}/{scenarioResult.assertions.length} assertions passed
+                </p>
+                <ul className="ops-list">
+                  {scenarioResult.assertions.map((item, index) => (
+                    <li key={`${item.name}-${index}`} className={item.passed ? "scenario-pass" : "scenario-fail"}>
+                      <span className="ops-meta">{item.passed ? "PASS" : "FAIL"}</span>
+                      <span>{item.name}</span>
+                      <small>
+                        expected: {item.expected} | actual: {item.actual}
+                      </small>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </>
+          ) : null}
 
           <h2>Operation Timeline</h2>
           <ul className="ops-list">

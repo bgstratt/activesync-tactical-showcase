@@ -8,7 +8,14 @@ import {
   fetchReplicationTopology,
   runDemoScenario
 } from "../app/hostClient";
-import type { CardBattleCard, CardBattlePerspective, CardBattleState, PeerStatus, ReplayEventItem } from "../../../shared/contracts/runtime";
+import type {
+  CardBattleCard,
+  CardBattlePerspective,
+  CardBattleState,
+  DemoScenarioRunResponse,
+  PeerStatus,
+  ReplayEventItem
+} from "../../../shared/contracts/runtime";
 
 const fallbackCardBattleState: CardBattleState = {
   turn: 1,
@@ -41,6 +48,7 @@ export function CardBattlePage() {
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [hostError, setHostError] = useState<string | null>(null);
+  const [scenarioResult, setScenarioResult] = useState<DemoScenarioRunResponse | null>(null);
   const [perspective, setPerspective] = useState<CardBattlePerspective>("auto");
 
   const detectedTeam = teamForPeer(activePeerId);
@@ -174,6 +182,7 @@ export function CardBattlePage() {
   async function runScenario() {
     try {
       const result = await runDemoScenario("card.private-turn");
+      setScenarioResult(result);
       const [snapshot, replay, topology] = await Promise.all([
         fetchCardBattleState(activePeerId, perspective),
         fetchReplicationEvents(120, activePeerId, perspective),
@@ -383,6 +392,28 @@ export function CardBattlePage() {
             ))}
             {events.length === 0 ? <li className="ops-empty">No card battle events yet.</li> : null}
           </ul>
+
+          {scenarioResult ? (
+            <>
+              <h2>Scenario Results</h2>
+              <div className="scenario-results">
+                <p className="topology-note">
+                  {scenarioResult.assertions.filter((item) => item.passed).length}/{scenarioResult.assertions.length} assertions passed
+                </p>
+                <ul className="ops-list">
+                  {scenarioResult.assertions.map((item, index) => (
+                    <li key={`${item.name}-${index}`} className={item.passed ? "scenario-pass" : "scenario-fail"}>
+                      <span className="ops-meta">{item.passed ? "PASS" : "FAIL"}</span>
+                      <span>{item.name}</span>
+                      <small>
+                        expected: {item.expected} | actual: {item.actual}
+                      </small>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </>
+          ) : null}
         </aside>
       </div>
     </section>

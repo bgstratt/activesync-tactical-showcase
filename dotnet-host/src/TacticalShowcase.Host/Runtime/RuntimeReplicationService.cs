@@ -356,7 +356,14 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
     {
         if (string.IsNullOrWhiteSpace(scenarioId))
         {
-            return new DemoScenarioRunResponse(false, "", "unknown", "scenarioId is required", DateTimeOffset.UtcNow);
+            return new DemoScenarioRunResponse(
+                false,
+                "",
+                "unknown",
+                "scenarioId is required",
+                [new DemoScenarioAssertion("scenario id provided", false, "non-empty", "empty")],
+                DateTimeOffset.UtcNow
+            );
         }
 
         lock (_sync)
@@ -388,9 +395,119 @@ internal sealed class RuntimeReplicationService : IRuntimeReplicationService, ID
                     break;
             }
 
+            var assertions = BuildScenarioAssertions(normalized, result.IsSuccess);
             AddLocalEvent("scenario", result.IsSuccess ? "run" : "run-failed", $"{normalized}: {result.Message}", "scenario");
-            return new DemoScenarioRunResponse(result.IsSuccess, normalized, mode, result.Message, DateTimeOffset.UtcNow);
+            return new DemoScenarioRunResponse(result.IsSuccess, normalized, mode, result.Message, assertions, DateTimeOffset.UtcNow);
         }
+    }
+
+    private IReadOnlyList<DemoScenarioAssertion> BuildScenarioAssertions(string scenarioId, bool runSuccess)
+    {
+        var assertions = new List<DemoScenarioAssertion>
+        {
+            new("scenario execution", runSuccess, "success", runSuccess ? "success" : "failed")
+        };
+
+        if (!runSuccess)
+        {
+            return assertions;
+        }
+
+        switch (scenarioId)
+        {
+            case "tactical.partition-replay":
+                assertions.Add(new DemoScenarioAssertion(
+                    "alpha partition cleared",
+                    !_partitionedPeers.Contains("alpha"),
+                    "alpha not partitioned",
+                    _partitionedPeers.Contains("alpha") ? "alpha partitioned" : "alpha not partitioned"
+                ));
+                assertions.Add(new DemoScenarioAssertion(
+                    "alpha tactical queue drained",
+                    !_queuedActionsByPeer.TryGetValue("alpha", out var alphaQueue) || alphaQueue.Count == 0,
+                    "0 queued ops",
+                    _queuedActionsByPeer.TryGetValue("alpha", out alphaQueue) ? alphaQueue.Count.ToString() : "0"
+                ));
+                assertions.Add(new DemoScenarioAssertion(
+                    "terrain write applied",
+                    _tacticalState.Terrain[2][2] == "wall",
+                    "terrain(2,2)=wall",
+                    _tacticalState.Terrain[2][2]
+                ));
+                break;
+
+            case "pixel.burst-partition":
+                assertions.Add(new DemoScenarioAssertion(
+                    "bravo partition cleared",
+                    !_partitionedPeers.Contains("bravo"),
+                    "bravo not partitioned",
+                    _partitionedPeers.Contains("bravo") ? "bravo partitioned" : "bravo not partitioned"
+                ));
+                assertions.Add(new DemoScenarioAssertion(
+                    "bravo tactical queue drained",
+                    !_queuedActionsByPeer.TryGetValue("bravo", out var bravoQueue) || bravoQueue.Count == 0,
+                    "0 queued ops",
+                    _queuedActionsByPeer.TryGetValue("bravo", out bravoQueue) ? bravoQueue.Count.ToString() : "0"
+                ));
+                assertions.Add(new DemoScenarioAssertion(
+                    "pixel terrain mutated",
+                    _tacticalState.Terrain[0][0] == "difficult",
+                    "terrain(0,0)=difficult",
+                    _tacticalState.Terrain[0][0]
+                ));
+                break;
+
+            case "dungeon.trigger-reconnect":
+                assertions.Add(new DemoScenarioAssertion(
+                    "builder partition cleared",
+                    !_partitionedPeers.Contains("builder"),
+                    "builder not partitioned",
+                    _partitionedPeers.Contains("builder") ? "builder partitioned" : "builder not partitioned"
+                ));
+                assertions.Add(new DemoScenarioAssertion(
+                    "trigger link exists",
+                    _tacticalState.TriggerLinks.Any(link => link.FromX == 4 && link.FromY == 4 && link.ToX == 8 && link.ToY == 8),
+                    "link 4,4 -> 8,8",
+                    _tacticalState.TriggerLinks.Any(link => link.FromX == 4 && link.FromY == 4 && link.ToX == 8 && link.ToY == 8)
+                        ? "present"
+                        : "missing"
+                ));
+                assertions.Add(new DemoScenarioAssertion(
+                    "door tile replayed",
+                    _tacticalState.Terrain[6][6] == "door",
+                    "terrain(6,6)=door",
+                    _tacticalState.Terrain[6][6]
+                ));
+                break;
+
+            case "card.private-turn":
+                assertions.Add(new DemoScenarioAssertion(
+                    "red partition cleared",
+                    !_partitionedPeers.Contains("red-1"),
+                    "red-1 not partitioned",
+                    _partitionedPeers.Contains("red-1") ? "red-1 partitioned" : "red-1 not partitioned"
+                ));
+                assertions.Add(new DemoScenarioAssertion(
+                    "red card queue drained",
+                    !_queuedCardActionsByPeer.TryGetValue("red-1", out var redQueue) || redQueue.Count == 0,
+                    "0 queued card ops",
+                    _queuedCardActionsByPeer.TryGetValue("red-1", out redQueue) ? redQueue.Count.ToString() : "0"
+                ));
+                var redHandCount = _cardBattleState.Players.TryGetValue("red", out var redState) ? redState.Hand.Count : -1;
+                assertions.Add(new DemoScenarioAssertion(
+                    "red drew one card",
+                    redHandCount == 1,
+                    "red hand=1",
+                    redHandCount.ToString()
+                ));
+                break;
+
+            default:
+                assertions.Add(new DemoScenarioAssertion("known scenario id", false, "known scenario", "unknown scenario"));
+                break;
+        }
+
+        return assertions;
     }
 
     private RuntimePeerActionResult RunTacticalPartitionReplayScenario()

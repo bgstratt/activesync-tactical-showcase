@@ -735,6 +735,25 @@ body {
   color: var(--ink-soft);
 }
 
+.scenario-results {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.66);
+  padding: 0.5rem 0.6rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.scenario-pass {
+  border-color: rgba(41, 125, 71, 0.28) !important;
+  background: rgba(41, 125, 71, 0.08) !important;
+}
+
+.scenario-fail {
+  border-color: rgba(155, 36, 36, 0.35) !important;
+  background: rgba(155, 36, 36, 0.1) !important;
+}
+
 .replay-inspector-page {
   gap: 1rem;
 }

@@ -60,7 +60,15 @@ public sealed record DemoScenarioRunResponse(
     string ScenarioId,
     string Mode,
     string Message,
+    IReadOnlyList<DemoScenarioAssertion> Assertions,
     DateTimeOffset CompletedAtUtc
+);
+
+public sealed record DemoScenarioAssertion(
+    string Name,
+    bool Passed,
+    string Expected,
+    string Actual
 );
 
 public sealed record TacticalTokenDto(

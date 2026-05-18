@@ -57,7 +57,15 @@ export interface DemoScenarioRunResponse {
   scenarioId: string;
   mode: string;
   message: string;
+  assertions: DemoScenarioAssertion[];
   completedAtUtc: string;
+}
+
+export interface DemoScenarioAssertion {
+  name: string;
+  passed: boolean;
+  expected: string;
+  actual: string;
 }
 
 export interface TacticalToken {
