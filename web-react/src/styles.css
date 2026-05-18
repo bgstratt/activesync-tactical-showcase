@@ -845,6 +845,19 @@ body {
   gap: 0.55rem;
 }
 
+.card-hand-section {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.card-hand-header {
+  margin: 0;
+  font-size: 0.92rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+}
+
 .card-tile {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -859,6 +872,11 @@ body {
 .card-tile.selected {
   border-color: rgba(127, 29, 21, 0.38);
   background: rgba(198, 64, 45, 0.12);
+}
+
+.card-tile.concealed {
+  cursor: default;
+  background: linear-gradient(145deg, #ded8c9, #c9c1ad);
 }
 
 .card-tile strong {

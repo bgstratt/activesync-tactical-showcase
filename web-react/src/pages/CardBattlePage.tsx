@@ -21,8 +21,15 @@ const fallbackCardBattleState: CardBattleState = {
   updatedAtUtc: new Date().toISOString()
 };
 
-function teamForPeer(peerId: string): "blue" | "red" {
-  return peerId.toLowerCase().includes("red") ? "red" : "blue";
+type ViewerTeam = "blue" | "red" | "observer";
+
+function teamForPeer(peerId: string): ViewerTeam {
+  const normalized = peerId.toLowerCase();
+  if (normalized.includes("observer") || normalized.includes("spectator") || normalized.includes("obs")) {
+    return "observer";
+  }
+
+  return normalized.includes("red") ? "red" : "blue";
 }
 
 export function CardBattlePage() {
@@ -34,10 +41,16 @@ export function CardBattlePage() {
   const [message, setMessage] = useState<string | null>(null);
   const [hostError, setHostError] = useState<string | null>(null);
 
-  const activeTeam = teamForPeer(activePeerId);
+  const viewerTeam = teamForPeer(activePeerId);
+  const activeTeam = viewerTeam === "observer" ? "blue" : viewerTeam;
+  const canAct = viewerTeam !== "observer";
+
   const queueDepth = useMemo(() => state.queuedOps.reduce((sum, item) => sum + item.count, 0), [state.queuedOps]);
   const blue = state.players.find((player) => player.team === "blue") ?? fallbackCardBattleState.players[0];
   const red = state.players.find((player) => player.team === "red") ?? fallbackCardBattleState.players[1];
+  const selfPlayer = activeTeam === "blue" ? blue : red;
+  const opponentPlayer = activeTeam === "blue" ? red : blue;
+  const visibleHand = useMemo(() => (canAct ? selfPlayer.hand : []), [canAct, selfPlayer.hand]);
 
   useEffect(() => {
     let isCanceled = false;
@@ -81,13 +94,17 @@ export function CardBattlePage() {
     };
   }, [activePeerId]);
 
-  async function runAction(action: "card-draw" | "card-end-turn" | "card-reset", extras?: Record<string, string>) {
+  async function runAction(action: "card-draw" | "card-end-turn" | "card-reset") {
+    if (!canAct) {
+      setMessage("Observer perspective is read-only");
+      return;
+    }
+
     try {
       const response = await applyCardBattleAction({
         action,
         actorPeerId: activePeerId,
-        team: activeTeam,
-        ...(extras ?? {})
+        team: activeTeam
       });
       setState(response.state);
       setMessage(response.message);
@@ -101,6 +118,11 @@ export function CardBattlePage() {
   }
 
   async function playCard(card: CardBattleCard) {
+    if (!canAct) {
+      setMessage("Observer perspective is read-only");
+      return;
+    }
+
     const targetTeam = card.effectType === "heal" ? activeTeam : activeTeam === "blue" ? "red" : "blue";
     try {
       const response = await applyCardBattleAction({
@@ -169,19 +191,19 @@ export function CardBattlePage() {
                 ))}
               </select>
               <p className="topology-note">
-                Team: <strong>{activeTeam}</strong> | Turn {state.turn} ({state.activeTeam} to act)
+                Perspective: <strong>{viewerTeam}</strong> | Acting team: <strong>{activeTeam}</strong> | Turn {state.turn} ({state.activeTeam} to act)
               </p>
               <div className="action-row">
                 <button type="button" className="action-btn tactical-btn" onClick={() => void addPeer()}>
                   Add Peer
                 </button>
-                <button type="button" className="action-btn tactical-btn" onClick={() => void runAction("card-draw")}>
+                <button type="button" className="action-btn tactical-btn" onClick={() => void runAction("card-draw")} disabled={!canAct}>
                   Draw Card
                 </button>
-                <button type="button" className="action-btn tactical-btn" onClick={() => void runAction("card-end-turn")}>
+                <button type="button" className="action-btn tactical-btn" onClick={() => void runAction("card-end-turn")} disabled={!canAct}>
                   End Turn
                 </button>
-                <button type="button" className="action-btn tactical-btn" onClick={() => void runAction("card-reset")}>
+                <button type="button" className="action-btn tactical-btn" onClick={() => void runAction("card-reset")} disabled={!canAct}>
                   Reset Match
                 </button>
               </div>
@@ -211,38 +233,54 @@ export function CardBattlePage() {
               <h3>Blue Team</h3>
               <p>HP: {blue.hp}</p>
               <p>Energy: {blue.energy}</p>
-              <p>Deck: {blue.deckCount} | Discard: {blue.discardCount}</p>
+              <p>Deck: {blue.deckCount} | Discard: {blue.discardCount} | Hand: {blue.hand.length}</p>
             </div>
             <div className="card-team-panel">
               <h3>Red Team</h3>
               <p>HP: {red.hp}</p>
               <p>Energy: {red.energy}</p>
-              <p>Deck: {red.deckCount} | Discard: {red.discardCount}</p>
+              <p>Deck: {red.deckCount} | Discard: {red.discardCount} | Hand: {red.hand.length}</p>
             </div>
           </div>
 
-          <div className="card-hand-grid">
-            {(activeTeam === "blue" ? blue.hand : red.hand).map((card) => {
-              const selected = selectedCardId === card.id;
-              return (
-                <button
-                  key={card.id}
-                  type="button"
-                  className={selected ? "card-tile selected" : "card-tile"}
-                  onClick={() => {
-                    setSelectedCardId(card.id);
-                    void playCard(card);
-                  }}
-                >
-                  <strong>{card.name}</strong>
-                  <span>{card.effectType === "damage" ? "Damage" : "Heal"}: {card.amount}</span>
-                  <small>Cost: {card.cost}</small>
-                </button>
-              );
-            })}
-            {(activeTeam === "blue" ? blue.hand : red.hand).length === 0 ? (
-              <p className="ops-empty">No cards in hand. Draw to start your turn.</p>
-            ) : null}
+          <div className="card-hand-section">
+            <h3 className="card-hand-header">Visible Hand ({activeTeam})</h3>
+            <div className="card-hand-grid">
+              {visibleHand.map((card) => {
+                const selected = selectedCardId === card.id;
+                return (
+                  <button
+                    key={card.id}
+                    type="button"
+                    className={selected ? "card-tile selected" : "card-tile"}
+                    onClick={() => {
+                      setSelectedCardId(card.id);
+                      void playCard(card);
+                    }}
+                    disabled={!canAct}
+                  >
+                    <strong>{card.name}</strong>
+                    <span>{card.effectType === "damage" ? "Damage" : "Heal"}: {card.amount}</span>
+                    <small>Cost: {card.cost}</small>
+                  </button>
+                );
+              })}
+              {visibleHand.length === 0 ? <p className="ops-empty">No visible cards in hand.</p> : null}
+            </div>
+          </div>
+
+          <div className="card-hand-section">
+            <h3 className="card-hand-header">Concealed Opponent Hand ({opponentPlayer.team})</h3>
+            <div className="card-hand-grid">
+              {Array.from({ length: opponentPlayer.hand.length }).map((_, index) => (
+                <div key={`concealed-${index}`} className="card-tile concealed" aria-hidden="true">
+                  <strong>Hidden Card</strong>
+                  <span>Details redacted for this peer view</span>
+                  <small>Card back</small>
+                </div>
+              ))}
+              {opponentPlayer.hand.length === 0 ? <p className="ops-empty">No concealed opponent cards.</p> : null}
+            </div>
           </div>
         </article>
 
@@ -272,7 +310,7 @@ export function CardBattlePage() {
                 <span className="ops-meta">
                   {new Date(event.timestampUtc).toLocaleTimeString()} [{event.stream}:{event.type}]
                 </span>
-                <span>{event.message}</span>
+                <span>{projectEventMessage(event, viewerTeam)}</span>
                 {event.peerId ? <span className="replay-peer">peer: {event.peerId}</span> : null}
               </li>
             ))}
@@ -282,4 +320,22 @@ export function CardBattlePage() {
       </div>
     </section>
   );
+}
+
+function projectEventMessage(event: ReplayEventItem, viewerTeam: ViewerTeam): string {
+  if (event.stream !== "card-battle" || event.type !== "draw") {
+    return event.message;
+  }
+
+  const match = event.message.match(/^(blue|red)\s+drew\s+.+$/i);
+  if (!match) {
+    return event.message;
+  }
+
+  const drawTeam = match[1].toLowerCase() as "blue" | "red";
+  if (viewerTeam === "observer" || drawTeam !== viewerTeam) {
+    return `${drawTeam} drew a card`;
+  }
+
+  return event.message;
 }
