@@ -8,6 +8,7 @@ import {
   fetchTacticalState,
   runDemoScenario
 } from "../app/hostClient";
+import { loadScenarioHistory, recordScenarioRun, type ScenarioHistoryEntry } from "../app/scenarioHistory";
 import type {
   DemoScenarioRunResponse,
   PeerStatus,
@@ -52,6 +53,7 @@ export function TacticalStrategyPage() {
   const [hostError, setHostError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [scenarioResult, setScenarioResult] = useState<DemoScenarioRunResponse | null>(null);
+  const [scenarioHistory, setScenarioHistory] = useState<ScenarioHistoryEntry[]>(() => loadScenarioHistory("tactical"));
 
   async function refreshRuntimeViews() {
     const [replay, topology] = await Promise.all([fetchReplicationEvents(80), fetchReplicationTopology()]);
@@ -177,6 +179,7 @@ export function TacticalStrategyPage() {
       const result = await runDemoScenario("tactical.partition-replay");
       setPeerMessage(result.message);
       setScenarioResult(result);
+      setScenarioHistory(recordScenarioRun("tactical", result));
       const snapshot = await fetchTacticalState();
       setState(snapshot);
       await refreshRuntimeViews();
@@ -452,6 +455,25 @@ export function TacticalStrategyPage() {
                   ))}
                 </ul>
               </div>
+            </>
+          ) : null}
+
+          {scenarioHistory.length > 0 ? (
+            <>
+              <h2>Recent Runs</h2>
+              <ul className="ops-list">
+                {scenarioHistory.map((entry, index) => (
+                  <li key={`${entry.completedAtUtc}-${index}`}>
+                    <span className="ops-meta">
+                      {new Date(entry.completedAtUtc).toLocaleString()} [{entry.scenarioId}] build {entry.buildRef}
+                    </span>
+                    <span>
+                      {entry.passed}/{entry.total} assertions passed | {entry.ok ? "ok" : "failed"}
+                    </span>
+                    <small>{entry.message}</small>
+                  </li>
+                ))}
+              </ul>
             </>
           ) : null}
 

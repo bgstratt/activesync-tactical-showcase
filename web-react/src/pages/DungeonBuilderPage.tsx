@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { applyTacticalAction, fetchReplicationEvents, fetchTacticalState, runDemoScenario } from "../app/hostClient";
+import { loadScenarioHistory, recordScenarioRun, type ScenarioHistoryEntry } from "../app/scenarioHistory";
 import type { DemoScenarioRunResponse, ReplayEventItem, TacticalActionRequest, TacticalBoardState, TacticalToken } from "../../../shared/contracts/runtime";
 
 type PaintType = "room" | "wall" | "door" | "trap" | "loot";
@@ -32,6 +33,7 @@ export function DungeonBuilderPage() {
   const [linkStart, setLinkStart] = useState<{ x: number; y: number } | null>(null);
   const [events, setEvents] = useState<ReplayEventItem[]>([]);
   const [scenarioResult, setScenarioResult] = useState<DemoScenarioRunResponse | null>(null);
+  const [scenarioHistory, setScenarioHistory] = useState<ScenarioHistoryEntry[]>(() => loadScenarioHistory("dungeon"));
   const [hostError, setHostError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
 
@@ -109,6 +111,7 @@ export function DungeonBuilderPage() {
     try {
       const result = await runDemoScenario("dungeon.trigger-reconnect");
       setScenarioResult(result);
+      setScenarioHistory(recordScenarioRun("dungeon", result));
       const [snapshot, replay] = await Promise.all([fetchTacticalState(), fetchReplicationEvents(120)]);
       setState(snapshot);
       const modeEvents = replay.events.filter(
@@ -346,6 +349,25 @@ export function DungeonBuilderPage() {
                   ))}
                 </ul>
               </div>
+            </>
+          ) : null}
+
+          {scenarioHistory.length > 0 ? (
+            <>
+              <h2>Recent Runs</h2>
+              <ul className="ops-list">
+                {scenarioHistory.map((entry, index) => (
+                  <li key={`${entry.completedAtUtc}-${index}`}>
+                    <span className="ops-meta">
+                      {new Date(entry.completedAtUtc).toLocaleString()} [{entry.scenarioId}] build {entry.buildRef}
+                    </span>
+                    <span>
+                      {entry.passed}/{entry.total} assertions passed | {entry.ok ? "ok" : "failed"}
+                    </span>
+                    <small>{entry.message}</small>
+                  </li>
+                ))}
+              </ul>
             </>
           ) : null}
         </aside>

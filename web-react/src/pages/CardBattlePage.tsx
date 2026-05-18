@@ -8,6 +8,7 @@ import {
   fetchReplicationTopology,
   runDemoScenario
 } from "../app/hostClient";
+import { loadScenarioHistory, recordScenarioRun, type ScenarioHistoryEntry } from "../app/scenarioHistory";
 import type {
   CardBattleCard,
   CardBattlePerspective,
@@ -49,6 +50,7 @@ export function CardBattlePage() {
   const [message, setMessage] = useState<string | null>(null);
   const [hostError, setHostError] = useState<string | null>(null);
   const [scenarioResult, setScenarioResult] = useState<DemoScenarioRunResponse | null>(null);
+  const [scenarioHistory, setScenarioHistory] = useState<ScenarioHistoryEntry[]>(() => loadScenarioHistory("card-battle"));
   const [perspective, setPerspective] = useState<CardBattlePerspective>("auto");
 
   const detectedTeam = teamForPeer(activePeerId);
@@ -183,6 +185,7 @@ export function CardBattlePage() {
     try {
       const result = await runDemoScenario("card.private-turn");
       setScenarioResult(result);
+      setScenarioHistory(recordScenarioRun("card-battle", result));
       const [snapshot, replay, topology] = await Promise.all([
         fetchCardBattleState(activePeerId, perspective),
         fetchReplicationEvents(120, activePeerId, perspective),
@@ -412,6 +415,25 @@ export function CardBattlePage() {
                   ))}
                 </ul>
               </div>
+            </>
+          ) : null}
+
+          {scenarioHistory.length > 0 ? (
+            <>
+              <h2>Recent Runs</h2>
+              <ul className="ops-list">
+                {scenarioHistory.map((entry, index) => (
+                  <li key={`${entry.completedAtUtc}-${index}`}>
+                    <span className="ops-meta">
+                      {new Date(entry.completedAtUtc).toLocaleString()} [{entry.scenarioId}] build {entry.buildRef}
+                    </span>
+                    <span>
+                      {entry.passed}/{entry.total} assertions passed | {entry.ok ? "ok" : "failed"}
+                    </span>
+                    <small>{entry.message}</small>
+                  </li>
+                ))}
+              </ul>
             </>
           ) : null}
         </aside>

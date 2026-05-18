@@ -7,6 +7,7 @@ import {
   fetchTacticalState,
   runDemoScenario
 } from "../app/hostClient";
+import { loadScenarioHistory, recordScenarioRun, type ScenarioHistoryEntry } from "../app/scenarioHistory";
 import type { DemoScenarioRunResponse, PeerStatus, ReplayEventItem, TacticalBoardState } from "../../../shared/contracts/runtime";
 
 type PixelBrush = "plain" | "wall" | "difficult";
@@ -56,6 +57,7 @@ export function PixelSandboxPage() {
   const [hostError, setHostError] = useState<string | null>(null);
   const [burstSamples, setBurstSamples] = useState<BurstSample[]>([]);
   const [scenarioResult, setScenarioResult] = useState<DemoScenarioRunResponse | null>(null);
+  const [scenarioHistory, setScenarioHistory] = useState<ScenarioHistoryEntry[]>(() => loadScenarioHistory("pixel"));
   const [pendingDrain, setPendingDrain] = useState<PendingDrainMeasurement | null>(null);
   const nextSampleId = useRef(1);
 
@@ -243,6 +245,7 @@ export function PixelSandboxPage() {
     try {
       const result = await runDemoScenario("pixel.burst-partition");
       setScenarioResult(result);
+      setScenarioHistory(recordScenarioRun("pixel", result));
       const [snapshot, replay, topology] = await Promise.all([
         fetchTacticalState(),
         fetchReplicationEvents(200),
@@ -520,6 +523,25 @@ export function PixelSandboxPage() {
                   ))}
                 </ul>
               </div>
+            </>
+          ) : null}
+
+          {scenarioHistory.length > 0 ? (
+            <>
+              <h2>Recent Runs</h2>
+              <ul className="ops-list">
+                {scenarioHistory.map((entry, index) => (
+                  <li key={`${entry.completedAtUtc}-${index}`}>
+                    <span className="ops-meta">
+                      {new Date(entry.completedAtUtc).toLocaleString()} [{entry.scenarioId}] build {entry.buildRef}
+                    </span>
+                    <span>
+                      {entry.passed}/{entry.total} assertions passed | {entry.ok ? "ok" : "failed"}
+                    </span>
+                    <small>{entry.message}</small>
+                  </li>
+                ))}
+              </ul>
             </>
           ) : null}
         </aside>
