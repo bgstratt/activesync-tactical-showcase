@@ -259,6 +259,7 @@ export function InfiniteWorkspacePage() {
   const [pendingPeerQueue, setPendingPeerQueue] = useState<PendingPeerDelivery[]>([]);
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [activeStrokePoints, setActiveStrokePoints] = useState<Point[]>([]);
   const [replayCursor, setReplayCursor] = useState(0);
   const [followLiveReplay, setFollowLiveReplay] = useState(true);
   const [branches, setBranches] = useState<BranchSnapshot[]>([]);
@@ -401,7 +402,9 @@ export function InfiniteWorkspacePage() {
       }
 
       if (drawRef.current) {
-        drawRef.current = [...drawRef.current, { x, y }];
+        const nextPoints = [...drawRef.current, { x, y }];
+        drawRef.current = nextPoints;
+        setActiveStrokePoints(nextPoints);
       }
     }
 
@@ -414,6 +417,7 @@ export function InfiniteWorkspacePage() {
       }
 
       drawRef.current = null;
+      setActiveStrokePoints([]);
     }
 
     window.addEventListener("mousemove", onPointerMove);
@@ -561,7 +565,9 @@ export function InfiniteWorkspacePage() {
     }
 
     if (tool === "draw") {
-      drawRef.current = [{ x, y }];
+      const initial = [{ x, y }];
+      drawRef.current = initial;
+      setActiveStrokePoints(initial);
     }
   }
 
@@ -726,6 +732,16 @@ export function InfiniteWorkspacePage() {
                     points={stroke.points.map((point) => `${point.x},${point.y}`).join(" ")}
                   />
                 ))}
+
+                {activeStrokePoints.length > 1 ? (
+                  <polyline
+                    fill="none"
+                    stroke={peerColor[activePeerId]}
+                    strokeOpacity={0.9}
+                    strokeWidth={3}
+                    points={activeStrokePoints.map((point) => `${point.x},${point.y}`).join(" ")}
+                  />
+                ) : null}
               </svg>
 
               {sortedAssets.map((asset) => (
