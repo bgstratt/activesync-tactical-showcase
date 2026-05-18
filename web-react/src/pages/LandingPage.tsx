@@ -22,8 +22,8 @@ export function LandingPage() {
           tactical maps, entity systems, chat, inventory, scripts, and replay diagnostics.
         </p>
         <div className="hero-actions">
-          <Link to="/modes/tactical-strategy" className="cta-primary">
-            Launch Tactical Strategy
+          <Link to="/modes/infinite-workspace" className="cta-primary">
+            Launch Infinite Workspace
           </Link>
           <Link to="/diagnostics/ops" className="cta-secondary">
             Open Operation Stream

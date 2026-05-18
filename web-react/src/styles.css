@@ -942,6 +942,119 @@ body {
   color: var(--ink-soft);
 }
 
+.infinite-workspace-page {
+  gap: 1rem;
+}
+
+.infinite-controls {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.upload-btn {
+  position: relative;
+  overflow: hidden;
+}
+
+.upload-btn input[type="file"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.infinite-layout {
+  display: grid;
+  grid-template-columns: minmax(620px, 1fr) minmax(280px, 340px);
+  gap: 1rem;
+}
+
+.workspace-scroll {
+  max-height: 68vh;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: auto;
+  background:
+    linear-gradient(0deg, rgba(33, 41, 58, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(33, 41, 58, 0.06) 1px, transparent 1px),
+    rgba(255, 255, 255, 0.68);
+  background-size: 26px 26px;
+}
+
+.workspace-surface {
+  width: 2200px;
+  height: 1400px;
+  position: relative;
+}
+
+.workspace-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.workspace-node {
+  position: absolute;
+  min-width: 136px;
+  border: 2px solid #3b82f6;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 0.35rem 0.5rem;
+  cursor: grab;
+  box-shadow: 0 6px 14px rgba(12, 16, 21, 0.13);
+  display: grid;
+  gap: 0.12rem;
+}
+
+.workspace-node:active {
+  cursor: grabbing;
+}
+
+.workspace-node.selected {
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2), 0 10px 20px rgba(12, 16, 21, 0.17);
+}
+
+.workspace-node strong {
+  font-size: 0.83rem;
+}
+
+.workspace-node small {
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+}
+
+.workspace-note {
+  position: absolute;
+  max-width: 220px;
+  border: 1px solid rgba(180, 122, 18, 0.45);
+  border-radius: 10px;
+  background: rgba(255, 246, 206, 0.86);
+  padding: 0.35rem 0.45rem;
+  display: grid;
+  gap: 0.1rem;
+}
+
+.workspace-note small {
+  color: #8a6a14;
+  font-size: 0.72rem;
+}
+
+.workspace-asset {
+  position: absolute;
+  border: 1px solid rgba(37, 99, 235, 0.36);
+  border-radius: 10px;
+  background: rgba(231, 241, 255, 0.86);
+  padding: 0.35rem 0.45rem;
+  display: grid;
+  gap: 0.1rem;
+  max-width: 260px;
+}
+
+.workspace-asset small {
+  color: #36507a;
+  font-size: 0.72rem;
+}
+
 @media (max-width: 1120px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -965,6 +1078,10 @@ body {
   }
 
   .card-battle-board {
+    grid-template-columns: 1fr;
+  }
+
+  .infinite-layout {
     grid-template-columns: 1fr;
   }
 }

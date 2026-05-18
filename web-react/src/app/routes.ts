@@ -75,6 +75,12 @@ export const appRoutes: AppRoute[] = [
     description: "Battle planning with synchronized movement, fog, and annotations."
   },
   {
+    path: "/modes/infinite-workspace",
+    title: "Infinite Workspace",
+    group: "modes",
+    description: "Figma/Miro-style collaborative canvas with latency, offline, replay, and convergence."
+  },
+  {
     path: "/modes/dungeon-builder",
     title: "Dungeon Builder",
     group: "modes",
