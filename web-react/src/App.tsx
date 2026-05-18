@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
 import { FeaturePage } from "./pages/FeaturePage";
 import { LandingPage } from "./pages/LandingPage";
+import { ReplayInspectorPage } from "./pages/ReplayInspectorPage";
 import { TacticalStrategyPage } from "./pages/TacticalStrategyPage";
 
 export function App() {
@@ -22,7 +23,7 @@ export function App() {
         <Route path="/modes/dungeon-builder" element={<FeaturePage routePath="/modes/dungeon-builder" />} />
         <Route path="/modes/pixel-sandbox" element={<FeaturePage routePath="/modes/pixel-sandbox" />} />
         <Route path="/modes/card-battle" element={<FeaturePage routePath="/modes/card-battle" />} />
-        <Route path="/modes/replay-inspector" element={<FeaturePage routePath="/modes/replay-inspector" />} />
+        <Route path="/modes/replay-inspector" element={<ReplayInspectorPage />} />
         <Route path="/diagnostics/topology" element={<FeaturePage routePath="/diagnostics/topology" />} />
         <Route path="/diagnostics/ops" element={<FeaturePage routePath="/diagnostics/ops" />} />
         <Route path="/diagnostics/assets" element={<FeaturePage routePath="/diagnostics/assets" />} />
