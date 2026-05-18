@@ -40,8 +40,10 @@ export function CardBattlePage() {
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [hostError, setHostError] = useState<string | null>(null);
+  const [perspective, setPerspective] = useState<"auto" | ViewerTeam>("auto");
 
-  const viewerTeam = teamForPeer(activePeerId);
+  const detectedTeam = teamForPeer(activePeerId);
+  const viewerTeam = perspective === "auto" ? detectedTeam : perspective;
   const activeTeam = viewerTeam === "observer" ? "blue" : viewerTeam;
   const canAct = viewerTeam !== "observer";
 
@@ -190,6 +192,17 @@ export function CardBattlePage() {
                   </option>
                 ))}
               </select>
+              <div className="peer-row">
+                <label>
+                  Perspective
+                  <select className="peer-select" value={perspective} onChange={(event) => setPerspective(event.target.value as "auto" | ViewerTeam)}>
+                    <option value="auto">Auto ({detectedTeam})</option>
+                    <option value="blue">Blue</option>
+                    <option value="red">Red</option>
+                    <option value="observer">Observer</option>
+                  </select>
+                </label>
+              </div>
               <p className="topology-note">
                 Perspective: <strong>{viewerTeam}</strong> | Acting team: <strong>{activeTeam}</strong> | Turn {state.turn} ({state.activeTeam} to act)
               </p>
@@ -269,19 +282,51 @@ export function CardBattlePage() {
             </div>
           </div>
 
-          <div className="card-hand-section">
-            <h3 className="card-hand-header">Concealed Opponent Hand ({opponentPlayer.team})</h3>
-            <div className="card-hand-grid">
-              {Array.from({ length: opponentPlayer.hand.length }).map((_, index) => (
-                <div key={`concealed-${index}`} className="card-tile concealed" aria-hidden="true">
-                  <strong>Hidden Card</strong>
-                  <span>Details redacted for this peer view</span>
-                  <small>Card back</small>
+          {viewerTeam === "observer" ? (
+            <>
+              <div className="card-hand-section">
+                <h3 className="card-hand-header">Concealed Blue Hand</h3>
+                <div className="card-hand-grid">
+                  {Array.from({ length: blue.hand.length }).map((_, index) => (
+                    <div key={`concealed-blue-${index}`} className="card-tile concealed" aria-hidden="true">
+                      <strong>Hidden Card</strong>
+                      <span>Observer view redacts all hand details</span>
+                      <small>Card back</small>
+                    </div>
+                  ))}
+                  {blue.hand.length === 0 ? <p className="ops-empty">No concealed blue cards.</p> : null}
                 </div>
-              ))}
-              {opponentPlayer.hand.length === 0 ? <p className="ops-empty">No concealed opponent cards.</p> : null}
+              </div>
+
+              <div className="card-hand-section">
+                <h3 className="card-hand-header">Concealed Red Hand</h3>
+                <div className="card-hand-grid">
+                  {Array.from({ length: red.hand.length }).map((_, index) => (
+                    <div key={`concealed-red-${index}`} className="card-tile concealed" aria-hidden="true">
+                      <strong>Hidden Card</strong>
+                      <span>Observer view redacts all hand details</span>
+                      <small>Card back</small>
+                    </div>
+                  ))}
+                  {red.hand.length === 0 ? <p className="ops-empty">No concealed red cards.</p> : null}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="card-hand-section">
+              <h3 className="card-hand-header">Concealed Opponent Hand ({opponentPlayer.team})</h3>
+              <div className="card-hand-grid">
+                {Array.from({ length: opponentPlayer.hand.length }).map((_, index) => (
+                  <div key={`concealed-${index}`} className="card-tile concealed" aria-hidden="true">
+                    <strong>Hidden Card</strong>
+                    <span>Details redacted for this peer view</span>
+                    <small>Card back</small>
+                  </div>
+                ))}
+                {opponentPlayer.hand.length === 0 ? <p className="ops-empty">No concealed opponent cards.</p> : null}
+              </div>
             </div>
-          </div>
+          )}
         </article>
 
         <aside className="telemetry-panel tactical-side-panel">
