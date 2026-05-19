@@ -17,6 +17,7 @@ import type {
 
 type PeerId = "alpha" | "bravo" | "charlie";
 type WorkspaceTool = "select" | "draw" | "annotate";
+type OfflineQueueByPeer = Record<PeerId, WorkspaceOperationItem[]>;
 
 const peers: PeerId[] = ["alpha", "bravo", "charlie"];
 
@@ -215,6 +216,22 @@ function enqueueOfflineOperation(queue: WorkspaceOperationItem[], next: Workspac
   return [...queue, next];
 }
 
+function createEmptyOfflineQueue(): OfflineQueueByPeer {
+  return {
+    alpha: [],
+    bravo: [],
+    charlie: []
+  };
+}
+
+function flattenOfflineQueue(queueByPeer: OfflineQueueByPeer): WorkspaceOperationItem[] {
+  return [...queueByPeer.alpha, ...queueByPeer.bravo, ...queueByPeer.charlie].sort((a, b) => a.updatedAtMs - b.updatedAtMs);
+}
+
+function countOfflineQueue(queueByPeer: OfflineQueueByPeer): number {
+  return queueByPeer.alpha.length + queueByPeer.bravo.length + queueByPeer.charlie.length;
+}
+
 export function RoomWorkspacePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [roomId, setRoomId] = useState(searchParams.get("room")?.trim() || generateRoomId());
@@ -224,7 +241,7 @@ export function RoomWorkspacePage() {
   const [state, setState] = useState<WorkspaceStateResponse>(emptyState);
   const [events, setEvents] = useState<WorkspaceEventItem[]>([]);
   const [operations, setOperations] = useState<WorkspaceOperationItem[]>([]);
-  const [offlineOperations, setOfflineOperations] = useState<WorkspaceOperationItem[]>([]);
+  const [offlineQueueByPeer, setOfflineQueueByPeer] = useState<OfflineQueueByPeer>(createEmptyOfflineQueue());
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [activeStrokePoints, setActiveStrokePoints] = useState<WorkspacePoint[]>([]);
   const [replayCursor, setReplayCursor] = useState(0);
@@ -250,24 +267,28 @@ export function RoomWorkspacePage() {
     try {
       const raw = window.localStorage.getItem(`${offlineQueueStoragePrefix}${roomId}`);
       if (!raw) {
-        setOfflineOperations([]);
+        setOfflineQueueByPeer(createEmptyOfflineQueue());
         return;
       }
 
-      const parsed = JSON.parse(raw) as WorkspaceOperationItem[];
-      setOfflineOperations(Array.isArray(parsed) ? parsed : []);
+      const parsed = JSON.parse(raw) as Partial<OfflineQueueByPeer>;
+      const next = createEmptyOfflineQueue();
+      next.alpha = Array.isArray(parsed.alpha) ? parsed.alpha : [];
+      next.bravo = Array.isArray(parsed.bravo) ? parsed.bravo : [];
+      next.charlie = Array.isArray(parsed.charlie) ? parsed.charlie : [];
+      setOfflineQueueByPeer(next);
     } catch {
-      setOfflineOperations([]);
+      setOfflineQueueByPeer(createEmptyOfflineQueue());
     }
   }, [roomId]);
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(`${offlineQueueStoragePrefix}${roomId}`, JSON.stringify(offlineOperations));
+      window.localStorage.setItem(`${offlineQueueStoragePrefix}${roomId}`, JSON.stringify(offlineQueueByPeer));
     } catch {
       // Non-fatal when storage is unavailable.
     }
-  }, [offlineOperations, roomId]);
+  }, [offlineQueueByPeer, roomId]);
 
   useEffect(() => {
     let isCanceled = false;
@@ -311,7 +332,8 @@ export function RoomWorkspacePage() {
   }, [cloudConnected, roomId]);
 
   useEffect(() => {
-    if (!cloudConnected || offlineOperations.length === 0) {
+    const queued = flattenOfflineQueue(offlineQueueByPeer);
+    if (!cloudConnected || queued.length === 0) {
       return;
     }
 
@@ -320,7 +342,7 @@ export function RoomWorkspacePage() {
     async function flushOfflineQueue() {
       setIsBusy(true);
       try {
-        for (const item of offlineOperations) {
+        for (const item of queued) {
           if (isCanceled) {
             return;
           }
@@ -338,8 +360,8 @@ export function RoomWorkspacePage() {
           setState(snapshot);
           setEvents(latestEvents.events);
           setOperations(latestOperations.operations);
-          setOfflineOperations([]);
-          setStatusMessage(`Flushed ${offlineOperations.length} offline operation(s) to shared room`);
+          setOfflineQueueByPeer(createEmptyOfflineQueue());
+          setStatusMessage(`Flushed ${queued.length} offline operation(s) to shared room`);
           setHostError(null);
         }
       } catch (error) {
@@ -359,15 +381,20 @@ export function RoomWorkspacePage() {
     return () => {
       isCanceled = true;
     };
-  }, [cloudConnected, offlineOperations, roomId]);
+  }, [cloudConnected, offlineQueueByPeer, roomId]);
 
   useEffect(() => {
+    const queuedCount = countOfflineQueue(offlineQueueByPeer);
     if (followLiveReplay) {
-      setReplayCursor(operations.length + offlineOperations.length);
+      setReplayCursor(operations.length + queuedCount);
     }
-  }, [operations.length, offlineOperations.length, followLiveReplay]);
+  }, [operations.length, offlineQueueByPeer, followLiveReplay]);
 
-  const mergedOperations = useMemo(() => [...operations, ...offlineOperations], [offlineOperations, operations]);
+  const activePeerOfflineOperations = useMemo(() => offlineQueueByPeer[activePeerId], [activePeerId, offlineQueueByPeer]);
+  const mergedOperations = useMemo(
+    () => [...operations, ...activePeerOfflineOperations],
+    [activePeerOfflineOperations, operations]
+  );
 
   const displayState = useMemo(() => {
     if (followLiveReplay) {
@@ -447,7 +474,10 @@ export function RoomWorkspacePage() {
 
     if (!cloudConnected) {
       const opItem = toOperationItem(normalized);
-      setOfflineOperations((previous) => enqueueOfflineOperation(previous, opItem));
+      setOfflineQueueByPeer((previous) => ({
+        ...previous,
+        [opItem.peerId as PeerId]: enqueueOfflineOperation(previous[opItem.peerId as PeerId], opItem)
+      }));
       if (announce) {
         setStatusMessage(`Queued offline ${operation.kind}`);
       }
@@ -465,7 +495,10 @@ export function RoomWorkspacePage() {
       setHostError(error instanceof Error ? error.message : "Operation failed");
       setCloudConnected(false);
       const opItem = toOperationItem(normalized);
-      setOfflineOperations((previous) => enqueueOfflineOperation(previous, opItem));
+      setOfflineQueueByPeer((previous) => ({
+        ...previous,
+        [opItem.peerId as PeerId]: enqueueOfflineOperation(previous[opItem.peerId as PeerId], opItem)
+      }));
       if (announce) {
         setStatusMessage(`Host unavailable. Queued offline ${operation.kind}`);
       }
@@ -747,7 +780,8 @@ export function RoomWorkspacePage() {
             <li>Room: {roomId}</li>
             <li>Operations: {state.operationCount}</li>
             <li>Cloud: {cloudConnected ? "connected" : "disconnected"}</li>
-            <li>Offline queue: {offlineOperations.length}</li>
+            <li>Offline queue (active peer): {activePeerOfflineOperations.length}</li>
+            <li>Offline queue (total): {countOfflineQueue(offlineQueueByPeer)}</li>
             <li>Nodes: {displayState.nodes.length}</li>
             <li>Edges: {displayState.edges.length}</li>
             <li>Assets: {displayState.assets.length}</li>
