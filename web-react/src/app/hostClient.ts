@@ -8,6 +8,7 @@ import type {
   ReplayEventsResponse,
   ReplicationTopologyResponse,
   WorkspaceEventsResponse,
+  WorkspaceOperationItem,
   WorkspaceOperationsResponse,
   WorkspaceOperationRequest,
   WorkspaceStateResponse,
@@ -162,4 +163,86 @@ export async function applyWorkspaceRoomOperation(roomId: string, operation: Wor
   });
 
   return parseResponse<WorkspaceStateResponse>(response);
+}
+
+export function connectWorkspaceRoomOperationStream(
+  roomId: string,
+  handlers: {
+    onOperation: (operation: WorkspaceOperationItem) => void;
+    onOpen?: () => void;
+    onError?: (message: string) => void;
+    onClose?: () => void;
+  }
+): () => void {
+  let disposed = false;
+  const baseUrl = getBaseUrl();
+  const streamUrl = baseUrl
+    .replace(/^http:\/\//i, "ws://")
+    .replace(/^https:\/\//i, "wss://") + `/api/workspace/rooms/${encodeURIComponent(roomId)}/ws`;
+
+  const socket = new WebSocket(streamUrl);
+
+  socket.addEventListener("open", () => {
+    if (disposed) {
+      try {
+        socket.close();
+      } catch {
+        // Best-effort cleanup.
+      }
+      return;
+    }
+
+    handlers.onOpen?.();
+  });
+
+  socket.addEventListener("message", (event) => {
+    try {
+      const parsed = JSON.parse(String(event.data)) as WorkspaceOperationItem;
+      handlers.onOperation(parsed);
+    } catch {
+      handlers.onError?.("Invalid room operation payload from stream");
+    }
+  });
+
+  socket.addEventListener("error", () => {
+    if (disposed) {
+      return;
+    }
+
+    handlers.onError?.("Room stream connection failed");
+  });
+
+  socket.addEventListener("close", () => {
+    if (disposed) {
+      return;
+    }
+
+    handlers.onClose?.();
+  });
+
+  return () => {
+    disposed = true;
+
+    if (socket.readyState === WebSocket.OPEN) {
+      try {
+        socket.close();
+      } catch {
+        // Best-effort cleanup.
+      }
+      return;
+    }
+
+    if (socket.readyState === WebSocket.CONNECTING) {
+      const closeWhenOpen = () => {
+        socket.removeEventListener("open", closeWhenOpen);
+        try {
+          socket.close();
+        } catch {
+          // Best-effort cleanup.
+        }
+      };
+
+      socket.addEventListener("open", closeWhenOpen);
+    }
+  };
 }

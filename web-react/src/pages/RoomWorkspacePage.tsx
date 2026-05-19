@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   applyWorkspaceRoomOperation,
+  connectWorkspaceRoomOperationStream,
   fetchWorkspaceRoomEvents,
   fetchWorkspaceRoomOperations,
   fetchWorkspaceRoomState
@@ -18,6 +19,14 @@ import type {
 type PeerId = "alpha" | "bravo" | "charlie";
 type WorkspaceTool = "select" | "draw" | "annotate";
 type OfflineQueueByPeer = Record<PeerId, WorkspaceOperationItem[]>;
+type PendingOnlineQueueByPeer = Record<PeerId, WorkspaceOperationItem[]>;
+type PendingLocalMoveByNode = Record<string, { x: number; y: number; peerId: string; updatedAtMs: number }>;
+type RtcDiagnosticsKey = "offersSent" | "offersReceived" | "answersSent" | "answersReceived" | "iceSent" | "iceReceived";
+type RtcPeerStatus = {
+  peerId: string;
+  connectionState: RTCPeerConnectionState | "none";
+  channelState: RTCDataChannelState | "none";
+};
 
 const peers: PeerId[] = ["alpha", "bravo", "charlie"];
 
@@ -30,6 +39,9 @@ const peerColor: Record<PeerId, string> = {
 const workspaceWidth = 2200;
 const workspaceHeight = 1400;
 const offlineQueueStoragePrefix = "room-workspace:offline-queue:";
+const rtcConfig: RTCConfiguration = {
+  iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+};
 
 const emptyState: WorkspaceStateResponse = {
   roomId: "",
@@ -53,6 +65,14 @@ function makeId(prefix: string): string {
 function generateRoomId(): string {
   const token = Math.random().toString(36).slice(2, 8);
   return `demo-${token}`;
+}
+
+function parsePeerId(value: string | null): PeerId {
+  if (value === "alpha" || value === "bravo" || value === "charlie") {
+    return value;
+  }
+
+  return "alpha";
 }
 
 function replayRoomState(operations: WorkspaceOperationItem[], count: number, roomId: string): WorkspaceStateResponse {
@@ -224,6 +244,18 @@ function createEmptyOfflineQueue(): OfflineQueueByPeer {
   };
 }
 
+function createEmptyPendingOnlineQueue(): PendingOnlineQueueByPeer {
+  return {
+    alpha: [],
+    bravo: [],
+    charlie: []
+  };
+}
+
+function enqueuePendingOnlineOperation(queue: WorkspaceOperationItem[], next: WorkspaceOperationItem): WorkspaceOperationItem[] {
+  return [...queue, next];
+}
+
 function flattenOfflineQueue(queueByPeer: OfflineQueueByPeer): WorkspaceOperationItem[] {
   return [...queueByPeer.alpha, ...queueByPeer.bravo, ...queueByPeer.charlie].sort((a, b) => a.updatedAtMs - b.updatedAtMs);
 }
@@ -232,50 +264,324 @@ function countOfflineQueue(queueByPeer: OfflineQueueByPeer): number {
   return queueByPeer.alpha.length + queueByPeer.bravo.length + queueByPeer.charlie.length;
 }
 
+function appendOperationUnique(
+  operations: WorkspaceOperationItem[],
+  nextOperation: WorkspaceOperationItem
+): WorkspaceOperationItem[] {
+  if (operations.some((operation) => operation.id === nextOperation.id)) {
+    return operations;
+  }
+
+  const next = [...operations, nextOperation];
+  if (next.length > 4000) {
+    return next.slice(next.length - 4000);
+  }
+
+  return next;
+}
+
+function appendRemoteOptimisticUnique(
+  operations: WorkspaceOperationItem[],
+  nextOperation: WorkspaceOperationItem
+): WorkspaceOperationItem[] {
+  if (
+    operations.some(
+      (operation) =>
+        operation.kind === nextOperation.kind &&
+        operation.peerId === nextOperation.peerId &&
+        operation.nodeId === nextOperation.nodeId &&
+        operation.updatedAtMs === nextOperation.updatedAtMs
+    )
+  ) {
+    return operations;
+  }
+
+  return [...operations, nextOperation];
+}
+
 export function RoomWorkspacePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [roomId, setRoomId] = useState(searchParams.get("room")?.trim() || generateRoomId());
-  const [activePeerId, setActivePeerId] = useState<PeerId>("alpha");
+  const [activePeerId, setActivePeerId] = useState<PeerId>(() => parsePeerId(searchParams.get("peer")));
   const [tool, setTool] = useState<WorkspaceTool>("select");
   const [annotationDraft, setAnnotationDraft] = useState("Decision note");
   const [state, setState] = useState<WorkspaceStateResponse>(emptyState);
   const [events, setEvents] = useState<WorkspaceEventItem[]>([]);
   const [operations, setOperations] = useState<WorkspaceOperationItem[]>([]);
+  const [remoteOptimisticOperations, setRemoteOptimisticOperations] = useState<WorkspaceOperationItem[]>([]);
   const [offlineQueueByPeer, setOfflineQueueByPeer] = useState<OfflineQueueByPeer>(createEmptyOfflineQueue());
+  const [pendingOnlineByPeer, setPendingOnlineByPeer] = useState<PendingOnlineQueueByPeer>(createEmptyPendingOnlineQueue());
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [activeStrokePoints, setActiveStrokePoints] = useState<WorkspacePoint[]>([]);
-  const [pendingStroke, setPendingStroke] = useState<{
+  const [pendingStrokes, setPendingStrokes] = useState<{
     id: string;
     points: WorkspacePoint[];
     color: string;
     width: number;
     peerId: string;
-  } | null>(null);
+  }[]>([]);
   const [dragPreview, setDragPreview] = useState<{ nodeId: string; x: number; y: number } | null>(null);
+  const [pendingLocalMoveByNode, setPendingLocalMoveByNode] = useState<PendingLocalMoveByNode>({});
+  const [remoteDragByNode, setRemoteDragByNode] = useState<
+    Record<string, { x: number; y: number; peerId: string; updatedAtMs: number; holdUntilAck: boolean }>
+  >({});
   const [replayCursor, setReplayCursor] = useState(0);
   const [followLiveReplay, setFollowLiveReplay] = useState(true);
+  const [isReplayPlaying, setIsReplayPlaying] = useState(false);
+  const [replaySpeedOpsPerSecond, setReplaySpeedOpsPerSecond] = useState(30);
   const [cloudConnected, setCloudConnected] = useState(true);
+  const [transportMode, setTransportMode] = useState<"ws-only" | "ws+webrtc">("ws-only");
+  const [signalSocketState, setSignalSocketState] = useState<"idle" | "connecting" | "open" | "closed" | "error">("idle");
+  const [knownSignalPeers, setKnownSignalPeers] = useState<string[]>([]);
+  const [rtcDiagnostics, setRtcDiagnostics] = useState<Record<RtcDiagnosticsKey, number>>({
+    offersSent: 0,
+    offersReceived: 0,
+    answersSent: 0,
+    answersReceived: 0,
+    iceSent: 0,
+    iceReceived: 0
+  });
+  const [rtcPeerStatuses, setRtcPeerStatuses] = useState<RtcPeerStatus[]>([]);
   const [isBusy, setIsBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [hostError, setHostError] = useState<string | null>(null);
 
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ nodeId: string; offsetX: number; offsetY: number } | null>(null);
+  const dragPreviewRef = useRef<{ nodeId: string; x: number; y: number } | null>(null);
+  const lastDragBroadcastAtRef = useRef(0);
   const drawRef = useRef<WorkspacePoint[] | null>(null);
+  const pendingCreatedNodeIdsRef = useRef<Set<string>>(new Set());
+  const deferredFinalMoveByNodeRef = useRef<Map<string, { x: number; y: number; updatedAtMs: number }>>(new Map());
+  const signalSocketRef = useRef<WebSocket | null>(null);
+  const rtcPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const rtcChannelsRef = useRef<Map<string, RTCDataChannel>>(new Map());
+
+  function bumpRtcDiagnostic(key: RtcDiagnosticsKey) {
+    setRtcDiagnostics((previous) => ({
+      ...previous,
+      [key]: previous[key] + 1
+    }));
+  }
+
+  function refreshRtcPeerStatuses() {
+    const peerIds = new Set<string>([
+      ...rtcPeersRef.current.keys(),
+      ...rtcChannelsRef.current.keys()
+    ]);
+
+    const nextStatuses = Array.from(peerIds)
+      .sort((a, b) => a.localeCompare(b))
+      .map((peerId) => {
+        const peer = rtcPeersRef.current.get(peerId);
+        const channel = rtcChannelsRef.current.get(peerId);
+        return {
+          peerId,
+          connectionState: peer?.connectionState ?? "none",
+          channelState: channel?.readyState ?? "none"
+        } satisfies RtcPeerStatus;
+      });
+
+    setRtcPeerStatuses(nextStatuses);
+  }
+
+  function sendSignal(payload: Record<string, unknown>) {
+    const socket = signalSocketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    socket.send(JSON.stringify(payload));
+  }
+
+  function disconnectRtc() {
+    for (const channel of rtcChannelsRef.current.values()) {
+      try {
+        channel.close();
+      } catch {
+        // ignore close race
+      }
+    }
+    rtcChannelsRef.current.clear();
+
+    for (const peer of rtcPeersRef.current.values()) {
+      try {
+        peer.close();
+      } catch {
+        // ignore close race
+      }
+    }
+    rtcPeersRef.current.clear();
+    setTransportMode("ws-only");
+    refreshRtcPeerStatuses();
+  }
+
+  function setupDataChannel(peerId: string, channel: RTCDataChannel) {
+    channel.onopen = () => {
+      rtcChannelsRef.current.set(peerId, channel);
+      setTransportMode("ws+webrtc");
+      refreshRtcPeerStatuses();
+    };
+
+    channel.onclose = () => {
+      rtcChannelsRef.current.delete(peerId);
+      if (rtcChannelsRef.current.size === 0) {
+        setTransportMode("ws-only");
+      }
+      refreshRtcPeerStatuses();
+      setRemoteDragByNode((previous) => {
+        const next = Object.fromEntries(Object.entries(previous).filter(([, value]) => value.peerId !== peerId));
+        return next;
+      });
+    };
+
+    channel.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(String(event.data)) as {
+          type?: string;
+          nodeId?: string;
+          x?: number;
+          y?: number;
+          peerId?: string;
+          updatedAtMs?: number;
+          operation?: WorkspaceOperationItem;
+        };
+
+        if (payload.type === "optimistic-op" && payload.operation) {
+          const operation = payload.operation;
+          if ((operation.kind === "add-node" || operation.kind === "add-annotation") && operation.peerId !== activePeerId) {
+            setRemoteOptimisticOperations((previous) => appendRemoteOptimisticUnique(previous, operation));
+          }
+          return;
+        }
+
+        if (payload.type === "drag-presence" && payload.nodeId && typeof payload.x === "number" && typeof payload.y === "number") {
+          const dragX = payload.x;
+          const dragY = payload.y;
+          const dragNodeId = payload.nodeId;
+          const dragUpdatedAtMs = typeof payload.updatedAtMs === "number" ? payload.updatedAtMs : Date.now();
+          setRemoteDragByNode((previous) => {
+            const existing = previous[dragNodeId];
+            if (existing && existing.updatedAtMs > dragUpdatedAtMs) {
+              return previous;
+            }
+
+            return {
+              ...previous,
+              [dragNodeId]: {
+                x: dragX,
+                y: dragY,
+                peerId: payload.peerId ?? peerId,
+                updatedAtMs: dragUpdatedAtMs,
+                holdUntilAck: false
+              }
+            };
+          });
+          return;
+        }
+
+        if (
+          payload.type === "drag-presence-end" &&
+          payload.nodeId &&
+          typeof payload.x === "number" &&
+          typeof payload.y === "number"
+        ) {
+          const dragX = payload.x;
+          const dragY = payload.y;
+          const dragNodeId = payload.nodeId;
+          const dragUpdatedAtMs = typeof payload.updatedAtMs === "number" ? payload.updatedAtMs : Date.now();
+          setRemoteDragByNode((previous) => {
+            return {
+              ...previous,
+              [dragNodeId]: {
+                x: dragX,
+                y: dragY,
+                peerId: payload.peerId ?? peerId,
+                updatedAtMs: dragUpdatedAtMs,
+                holdUntilAck: true
+              }
+            };
+          });
+        }
+      } catch {
+        // Ignore invalid peer payloads.
+      }
+    };
+  }
+
+  function ensureRtcPeer(remotePeerId: string, shouldOffer: boolean) {
+    if (remotePeerId === activePeerId) {
+      return rtcPeersRef.current.get(remotePeerId);
+    }
+
+    const existing = rtcPeersRef.current.get(remotePeerId);
+    if (existing) {
+      return existing;
+    }
+
+    const peer = new RTCPeerConnection(rtcConfig);
+    rtcPeersRef.current.set(remotePeerId, peer);
+    refreshRtcPeerStatuses();
+
+    peer.onconnectionstatechange = () => {
+      refreshRtcPeerStatuses();
+    };
+
+    peer.onicecandidate = (event) => {
+      if (!event.candidate) {
+        return;
+      }
+
+      bumpRtcDiagnostic("iceSent");
+
+      sendSignal({
+        type: "webrtc-ice",
+        to: remotePeerId,
+        candidate: event.candidate.candidate,
+        sdpMid: event.candidate.sdpMid,
+        sdpMLineIndex: event.candidate.sdpMLineIndex
+      });
+    };
+
+    peer.ondatachannel = (event) => {
+      setupDataChannel(remotePeerId, event.channel);
+    };
+
+    if (shouldOffer) {
+      // Keep this channel reliable so optimistic-op and drag-presence stay ordered/coherent.
+      const channel = peer.createDataChannel("workspace-presence");
+      setupDataChannel(remotePeerId, channel);
+
+      void (async () => {
+        const offer = await peer.createOffer();
+        await peer.setLocalDescription(offer);
+        bumpRtcDiagnostic("offersSent");
+        sendSignal({
+          type: "webrtc-offer",
+          to: remotePeerId,
+          sdp: offer.sdp
+        });
+      })();
+    }
+
+    return peer;
+  }
 
   useEffect(() => {
     setSearchParams((previous) => {
       const next = new URLSearchParams(previous);
       next.set("room", roomId);
+      next.set("peer", activePeerId);
       return next;
     }, { replace: true });
-  }, [roomId, setSearchParams]);
+  }, [activePeerId, roomId, setSearchParams]);
 
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(`${offlineQueueStoragePrefix}${roomId}`);
       if (!raw) {
         setOfflineQueueByPeer(createEmptyOfflineQueue());
+        setPendingOnlineByPeer(createEmptyPendingOnlineQueue());
         return;
       }
 
@@ -285,8 +591,10 @@ export function RoomWorkspacePage() {
       next.bravo = Array.isArray(parsed.bravo) ? parsed.bravo : [];
       next.charlie = Array.isArray(parsed.charlie) ? parsed.charlie : [];
       setOfflineQueueByPeer(next);
+      setPendingOnlineByPeer(createEmptyPendingOnlineQueue());
     } catch {
       setOfflineQueueByPeer(createEmptyOfflineQueue());
+      setPendingOnlineByPeer(createEmptyPendingOnlineQueue());
     }
   }, [roomId]);
 
@@ -331,13 +639,240 @@ export function RoomWorkspacePage() {
     void refresh();
     const intervalId = window.setInterval(() => {
       void refresh();
-    }, 1000);
+    }, 4000);
 
     return () => {
       isCanceled = true;
       window.clearInterval(intervalId);
     };
   }, [cloudConnected, roomId]);
+
+  useEffect(() => {
+    if (!cloudConnected) {
+      return;
+    }
+
+    const disconnect = connectWorkspaceRoomOperationStream(roomId, {
+      onOpen: () => {
+        setHostError(null);
+      },
+      onOperation: (operation) => {
+        setOperations((previous) => appendOperationUnique(previous, operation));
+      },
+      onError: (message) => {
+        setHostError(message);
+      }
+    });
+
+    return () => {
+      disconnect();
+    };
+  }, [cloudConnected, roomId]);
+
+  useEffect(() => {
+    let disposed = false;
+
+    if (!cloudConnected) {
+      setSignalSocketState("idle");
+      setKnownSignalPeers([]);
+      disconnectRtc();
+      if (signalSocketRef.current) {
+        signalSocketRef.current.close();
+        signalSocketRef.current = null;
+      }
+      return;
+    }
+
+    setSignalSocketState("connecting");
+    setKnownSignalPeers([]);
+
+    const baseUrl = (import.meta.env.VITE_HOST_BASE_URL as string | undefined) ?? "http://localhost:5074";
+    const signalUrl =
+      baseUrl.replace(/^http:\/\//i, "ws://").replace(/^https:\/\//i, "wss://") +
+      `/api/workspace/rooms/${encodeURIComponent(roomId)}/signal?peerId=${encodeURIComponent(activePeerId)}`;
+
+    const socket = new WebSocket(signalUrl);
+    signalSocketRef.current = socket;
+
+    socket.onopen = () => {
+      if (disposed) {
+        try {
+          socket.close();
+        } catch {
+          // ignore close race
+        }
+        return;
+      }
+
+      setSignalSocketState("open");
+    };
+
+    socket.onmessage = (event) => {
+      if (disposed) {
+        return;
+      }
+
+      try {
+        const payload = JSON.parse(String(event.data)) as {
+          type?: string;
+          peers?: string[];
+          peerId?: string;
+          from?: string;
+          sdp?: string;
+          candidate?: string;
+          sdpMid?: string | null;
+          sdpMLineIndex?: number | null;
+        };
+
+        if (payload.type === "peers") {
+          setKnownSignalPeers(payload.peers ?? []);
+          for (const peerId of payload.peers ?? []) {
+            if (peerId === activePeerId) {
+              continue;
+            }
+
+            const shouldOffer = activePeerId.localeCompare(peerId) < 0;
+            ensureRtcPeer(peerId, shouldOffer);
+          }
+          return;
+        }
+
+        if (payload.type === "peer-joined" && payload.peerId && payload.peerId !== activePeerId) {
+          setKnownSignalPeers((previous) =>
+            previous.includes(payload.peerId as string) ? previous : [...previous, payload.peerId as string]
+          );
+          const shouldOffer = activePeerId.localeCompare(payload.peerId) < 0;
+          ensureRtcPeer(payload.peerId, shouldOffer);
+          return;
+        }
+
+        if (payload.type === "peer-left" && payload.peerId) {
+          setKnownSignalPeers((previous) => previous.filter((peerId) => peerId !== payload.peerId));
+          const peer = rtcPeersRef.current.get(payload.peerId);
+          if (peer) {
+            try {
+              peer.close();
+            } catch {
+              // ignore
+            }
+            rtcPeersRef.current.delete(payload.peerId);
+            refreshRtcPeerStatuses();
+          }
+
+          rtcChannelsRef.current.delete(payload.peerId);
+          if (rtcChannelsRef.current.size === 0) {
+            setTransportMode("ws-only");
+          }
+
+          setRemoteDragByNode((previous) => {
+            const next = Object.fromEntries(Object.entries(previous).filter(([, value]) => value.peerId !== payload.peerId));
+            return next;
+          });
+          return;
+        }
+
+        if (payload.type === "webrtc-offer" && payload.from && payload.sdp) {
+          bumpRtcDiagnostic("offersReceived");
+          const peer = ensureRtcPeer(payload.from, false);
+          if (!peer) {
+            return;
+          }
+
+          void (async () => {
+            await peer.setRemoteDescription({ type: "offer", sdp: payload.sdp });
+            const answer = await peer.createAnswer();
+            await peer.setLocalDescription(answer);
+            bumpRtcDiagnostic("answersSent");
+            sendSignal({
+              type: "webrtc-answer",
+              to: payload.from,
+              sdp: answer.sdp
+            });
+          })();
+          return;
+        }
+
+        if (payload.type === "webrtc-answer" && payload.from && payload.sdp) {
+          bumpRtcDiagnostic("answersReceived");
+          const peer = ensureRtcPeer(payload.from, false);
+          if (!peer) {
+            return;
+          }
+
+          void peer.setRemoteDescription({ type: "answer", sdp: payload.sdp });
+          return;
+        }
+
+        if (payload.type === "webrtc-ice" && payload.from && payload.candidate) {
+          bumpRtcDiagnostic("iceReceived");
+          const peer = ensureRtcPeer(payload.from, false);
+          if (!peer) {
+            return;
+          }
+
+          void peer.addIceCandidate({
+            candidate: payload.candidate,
+            sdpMid: payload.sdpMid ?? undefined,
+            sdpMLineIndex: payload.sdpMLineIndex ?? undefined
+          });
+        }
+      } catch {
+        // Ignore invalid signaling payload.
+      }
+    };
+
+    socket.onerror = () => {
+      if (disposed) {
+        return;
+      }
+
+      setSignalSocketState("error");
+      setTransportMode("ws-only");
+    };
+
+    socket.onclose = () => {
+      if (disposed) {
+        return;
+      }
+
+      setSignalSocketState("closed");
+      setTransportMode("ws-only");
+      if (signalSocketRef.current === socket) {
+        signalSocketRef.current = null;
+      }
+      disconnectRtc();
+    };
+
+    return () => {
+      disposed = true;
+
+      if (signalSocketRef.current === socket) {
+        signalSocketRef.current = null;
+      }
+
+      if (socket.readyState === WebSocket.OPEN) {
+        try {
+          socket.close();
+        } catch {
+          // ignore close race
+        }
+      } else if (socket.readyState === WebSocket.CONNECTING) {
+        const closeWhenOpen = () => {
+          socket.removeEventListener("open", closeWhenOpen);
+          try {
+            socket.close();
+          } catch {
+            // ignore close race
+          }
+        };
+
+        socket.addEventListener("open", closeWhenOpen);
+      }
+
+      setSignalSocketState("idle");
+      disconnectRtc();
+    };
+  }, [activePeerId, cloudConnected, roomId]);
 
   useEffect(() => {
     const queued = flattenOfflineQueue(offlineQueueByPeer);
@@ -399,23 +934,152 @@ export function RoomWorkspacePage() {
   }, [operations.length, offlineQueueByPeer, followLiveReplay]);
 
   useEffect(() => {
-    if (!pendingStroke) {
-      return;
-    }
-
-    const acknowledged = operations.some(
-      (op) => op.kind === "add-stroke" && op.nodeId === pendingStroke.id && op.peerId === pendingStroke.peerId
+    setPendingStrokes((previous) =>
+      previous.filter(
+        (pending) =>
+          !operations.some((op) => op.kind === "add-stroke" && op.nodeId === pending.id && op.peerId === pending.peerId)
+      )
     );
 
-    if (acknowledged) {
-      setPendingStroke(null);
+    setPendingOnlineByPeer((previous) => {
+      const next: PendingOnlineQueueByPeer = {
+        alpha: previous.alpha.filter(
+          (pending) =>
+            !operations.some(
+              (op) =>
+                op.kind === pending.kind &&
+                op.peerId === pending.peerId &&
+                op.nodeId === pending.nodeId &&
+                op.updatedAtMs >= pending.updatedAtMs
+            )
+        ),
+        bravo: previous.bravo.filter(
+          (pending) =>
+            !operations.some(
+              (op) =>
+                op.kind === pending.kind &&
+                op.peerId === pending.peerId &&
+                op.nodeId === pending.nodeId &&
+                op.updatedAtMs >= pending.updatedAtMs
+            )
+        ),
+        charlie: previous.charlie.filter(
+          (pending) =>
+            !operations.some(
+              (op) =>
+                op.kind === pending.kind &&
+                op.peerId === pending.peerId &&
+                op.nodeId === pending.nodeId &&
+                op.updatedAtMs >= pending.updatedAtMs
+            )
+        )
+      };
+
+      return next;
+    });
+
+    setRemoteOptimisticOperations((previous) =>
+      previous.filter(
+        (pending) =>
+          !operations.some(
+            (op) =>
+              op.kind === pending.kind &&
+              op.peerId === pending.peerId &&
+              op.nodeId === pending.nodeId &&
+              op.updatedAtMs >= pending.updatedAtMs
+          )
+      )
+    );
+
+    for (const op of operations) {
+      if (op.kind === "add-node" && op.peerId === activePeerId && op.nodeId && pendingCreatedNodeIdsRef.current.has(op.nodeId)) {
+        pendingCreatedNodeIdsRef.current.delete(op.nodeId);
+
+        const deferredMove = deferredFinalMoveByNodeRef.current.get(op.nodeId);
+        if (deferredMove) {
+          deferredFinalMoveByNodeRef.current.delete(op.nodeId);
+          void submitOperation(
+            {
+              peerId: activePeerId,
+              kind: "move-node",
+              nodeId: op.nodeId,
+              x: deferredMove.x,
+              y: deferredMove.y,
+              updatedAtMs: deferredMove.updatedAtMs
+            },
+            false
+          );
+        }
+      }
     }
-  }, [operations, pendingStroke]);
+
+    setPendingLocalMoveByNode((previous) => {
+      if (Object.keys(previous).length === 0) {
+        return previous;
+      }
+
+      let changed = false;
+      const next: PendingLocalMoveByNode = {};
+
+      for (const [nodeId, pending] of Object.entries(previous)) {
+        const acknowledged = operations.some(
+          (op) =>
+            op.kind === "move-node" &&
+            op.nodeId === nodeId &&
+            op.peerId === pending.peerId &&
+            op.updatedAtMs >= pending.updatedAtMs &&
+            op.x === pending.x &&
+            op.y === pending.y
+        );
+
+        if (acknowledged) {
+          changed = true;
+          continue;
+        }
+
+        next[nodeId] = pending;
+      }
+
+      return changed ? next : previous;
+    });
+
+    setRemoteDragByNode((previous) => {
+      let changed = false;
+      const next: Record<string, { x: number; y: number; peerId: string; updatedAtMs: number; holdUntilAck: boolean }> = {};
+
+      for (const [nodeId, value] of Object.entries(previous)) {
+        if (!value.holdUntilAck) {
+          next[nodeId] = value;
+          continue;
+        }
+
+        const acknowledged = operations.some(
+          (op) =>
+            op.kind === "move-node" &&
+            op.nodeId === nodeId &&
+            op.peerId === value.peerId &&
+            op.updatedAtMs >= value.updatedAtMs &&
+            op.x === value.x &&
+            op.y === value.y
+        );
+
+        if (acknowledged) {
+          changed = true;
+          continue;
+        }
+
+        next[nodeId] = value;
+      }
+
+      return changed ? next : previous;
+    });
+  }, [operations]);
 
   const activePeerOfflineOperations = useMemo(() => offlineQueueByPeer[activePeerId], [activePeerId, offlineQueueByPeer]);
+  const activePeerPendingOnlineOperations = useMemo(() => pendingOnlineByPeer[activePeerId], [activePeerId, pendingOnlineByPeer]);
   const mergedOperations = useMemo(
-    () => [...operations, ...activePeerOfflineOperations],
-    [activePeerOfflineOperations, operations]
+    () => [...operations, ...activePeerOfflineOperations, ...activePeerPendingOnlineOperations, ...remoteOptimisticOperations],
+    [activePeerOfflineOperations, activePeerPendingOnlineOperations, operations, remoteOptimisticOperations]
   );
 
   const displayState = useMemo(() => {
@@ -425,6 +1089,64 @@ export function RoomWorkspacePage() {
 
     return replayRoomState(mergedOperations, replayCursor, roomId);
   }, [followLiveReplay, mergedOperations, replayCursor, roomId]);
+
+  useEffect(() => {
+    if (followLiveReplay || replayCursor < mergedOperations.length) {
+      return;
+    }
+
+    setFollowLiveReplay(true);
+    setIsReplayPlaying(false);
+  }, [followLiveReplay, replayCursor, mergedOperations.length]);
+
+  useEffect(() => {
+    if (!isReplayPlaying) {
+      return;
+    }
+
+    if (mergedOperations.length === 0) {
+      setIsReplayPlaying(false);
+      return;
+    }
+
+    if (followLiveReplay) {
+      setFollowLiveReplay(false);
+    }
+
+    const clampedSpeed = Math.max(1, replaySpeedOpsPerSecond);
+    let rafId = 0;
+    let lastTs = performance.now();
+    let accumulatedOps = 0;
+
+    const tick = (ts: number) => {
+      const elapsedMs = Math.max(0, ts - lastTs);
+      lastTs = ts;
+      accumulatedOps += (elapsedMs * clampedSpeed) / 1000;
+
+      if (accumulatedOps >= 1) {
+        const steps = Math.floor(accumulatedOps);
+        accumulatedOps -= steps;
+
+        setReplayCursor((previous) => {
+          const next = Math.min(mergedOperations.length, previous + steps);
+          if (next >= mergedOperations.length) {
+            setIsReplayPlaying(false);
+            setFollowLiveReplay(true);
+          }
+
+          return next;
+        });
+      }
+
+      rafId = window.requestAnimationFrame(tick);
+    };
+
+    rafId = window.requestAnimationFrame(tick);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+    };
+  }, [isReplayPlaying, followLiveReplay, mergedOperations.length, replaySpeedOpsPerSecond]);
 
   useEffect(() => {
     function onPointerMove(event: MouseEvent) {
@@ -438,11 +1160,48 @@ export function RoomWorkspacePage() {
       const y = Math.max(0, Math.min(workspaceHeight, event.clientY - rect.top));
 
       if (dragRef.current) {
-        setDragPreview({
+        const nextDrag = {
           nodeId: dragRef.current.nodeId,
           x: x - dragRef.current.offsetX,
           y: y - dragRef.current.offsetY
+        };
+
+        dragPreviewRef.current = nextDrag;
+
+        const now = Date.now();
+        const hasRtcPresenceChannel = Array.from(rtcChannelsRef.current.values()).some((channel) => channel.readyState === "open");
+        const isPendingCreatedNode = pendingCreatedNodeIdsRef.current.has(nextDrag.nodeId);
+        const shouldSendAuthoritativeStep = !isPendingCreatedNode && (!hasRtcPresenceChannel || now - lastDragBroadcastAtRef.current >= 90);
+        if (shouldSendAuthoritativeStep) {
+          lastDragBroadcastAtRef.current = now;
+          void submitOperation(
+            {
+              peerId: activePeerId,
+              kind: "move-node",
+              nodeId: dragRef.current.nodeId,
+              x: nextDrag.x,
+              y: nextDrag.y,
+              updatedAtMs: now
+            },
+            false
+          );
+        }
+
+        const payload = JSON.stringify({
+          type: "drag-presence",
+          peerId: activePeerId,
+          nodeId: dragRef.current.nodeId,
+          x: nextDrag.x,
+          y: nextDrag.y,
+          updatedAtMs: now
         });
+        for (const channel of rtcChannelsRef.current.values()) {
+          if (channel.readyState === "open") {
+            channel.send(payload);
+          }
+        }
+
+        setDragPreview(nextDrag);
       }
 
       if (drawRef.current) {
@@ -453,35 +1212,77 @@ export function RoomWorkspacePage() {
     }
 
     function onPointerUp() {
-      const dragged = dragRef.current;
-      const preview = dragPreview;
-      if (dragged && preview && dragged.nodeId === preview.nodeId) {
-        void submitOperation(
-          {
-            peerId: activePeerId,
-            kind: "move-node",
-            nodeId: dragged.nodeId,
-            x: preview.x,
-            y: preview.y,
-            updatedAtMs: Date.now()
-          },
-          false
-        );
-      }
-
+      const draggedNodeId = dragRef.current?.nodeId;
+      const finalDrag = dragPreviewRef.current;
+      const commitUpdatedAtMs = Date.now();
       dragRef.current = null;
       setDragPreview(null);
+      dragPreviewRef.current = null;
+      lastDragBroadcastAtRef.current = 0;
+
+      if (draggedNodeId && finalDrag && finalDrag.nodeId === draggedNodeId) {
+        setPendingLocalMoveByNode((previous) => ({
+          ...previous,
+          [draggedNodeId]: {
+            x: finalDrag.x,
+            y: finalDrag.y,
+            peerId: activePeerId,
+            updatedAtMs: commitUpdatedAtMs
+          }
+        }));
+
+        if (pendingCreatedNodeIdsRef.current.has(draggedNodeId)) {
+          deferredFinalMoveByNodeRef.current.set(draggedNodeId, {
+            x: finalDrag.x,
+            y: finalDrag.y,
+            updatedAtMs: commitUpdatedAtMs
+          });
+        } else {
+          void submitOperation(
+            {
+              peerId: activePeerId,
+              kind: "move-node",
+              nodeId: draggedNodeId,
+              x: finalDrag.x,
+              y: finalDrag.y,
+              updatedAtMs: commitUpdatedAtMs
+            },
+            false
+          );
+        }
+      }
+
+      if (draggedNodeId) {
+        const payload = JSON.stringify({
+          type: "drag-presence-end",
+          peerId: activePeerId,
+          nodeId: draggedNodeId,
+          x: finalDrag?.x,
+          y: finalDrag?.y,
+          updatedAtMs: commitUpdatedAtMs
+        });
+        for (const channel of rtcChannelsRef.current.values()) {
+          if (channel.readyState === "open") {
+            channel.send(payload);
+          }
+        }
+      }
 
       const points = drawRef.current;
       if (points && points.length > 1) {
         const strokeId = makeId("stroke");
-        setPendingStroke({
-          id: strokeId,
-          points,
-          color: peerColor[activePeerId],
-          width: 3,
-          peerId: activePeerId
-        });
+        if (cloudConnected) {
+          setPendingStrokes((previous) => [
+            ...previous,
+            {
+              id: strokeId,
+              points,
+              color: peerColor[activePeerId],
+              width: 3,
+              peerId: activePeerId
+            }
+          ]);
+        }
         void submitOperation({
           peerId: activePeerId,
           kind: "add-stroke",
@@ -504,23 +1305,39 @@ export function RoomWorkspacePage() {
       window.removeEventListener("mousemove", onPointerMove);
       window.removeEventListener("mouseup", onPointerUp);
     };
-  }, [activePeerId, dragPreview, roomId]);
+  }, [activePeerId, cloudConnected, roomId]);
 
   const renderedNodes = useMemo(() => {
-    if (!dragPreview) {
-      return displayState.nodes;
-    }
+    return displayState.nodes.map((node) => {
+      if (dragPreview && node.id === dragPreview.nodeId) {
+        return {
+          ...node,
+          x: dragPreview.x,
+          y: dragPreview.y
+        };
+      }
 
-    return displayState.nodes.map((node) =>
-      node.id === dragPreview.nodeId
-        ? {
-            ...node,
-            x: dragPreview.x,
-            y: dragPreview.y
-          }
-        : node
-    );
-  }, [displayState.nodes, dragPreview]);
+      const pendingLocalMove = pendingLocalMoveByNode[node.id];
+      if (pendingLocalMove) {
+        return {
+          ...node,
+          x: pendingLocalMove.x,
+          y: pendingLocalMove.y
+        };
+      }
+
+      const remoteDrag = remoteDragByNode[node.id];
+      if (remoteDrag) {
+        return {
+          ...node,
+          x: remoteDrag.x,
+          y: remoteDrag.y
+        };
+      }
+
+      return node;
+    });
+  }, [displayState.nodes, dragPreview, pendingLocalMoveByNode, remoteDragByNode]);
 
   const nodeById = useMemo(() => {
     return new Map(renderedNodes.map((node) => [node.id, node]));
@@ -531,6 +1348,33 @@ export function RoomWorkspacePage() {
       ...operation,
       updatedAtMs: operation.updatedAtMs ?? Date.now()
     };
+    const shouldOptimisticallyRender = normalized.kind === "add-node" || normalized.kind === "add-annotation";
+    let optimisticItem: WorkspaceOperationItem | null = null;
+
+    if (cloudConnected && shouldOptimisticallyRender) {
+      const nextOptimisticItem = toOperationItem(normalized);
+      optimisticItem = nextOptimisticItem;
+      if (nextOptimisticItem.kind === "add-node" && nextOptimisticItem.nodeId) {
+        pendingCreatedNodeIdsRef.current.add(nextOptimisticItem.nodeId);
+      }
+      setPendingOnlineByPeer((previous) => ({
+        ...previous,
+        [nextOptimisticItem.peerId as PeerId]: enqueuePendingOnlineOperation(
+          previous[nextOptimisticItem.peerId as PeerId],
+          nextOptimisticItem
+        )
+      }));
+
+      const payload = JSON.stringify({
+        type: "optimistic-op",
+        operation: nextOptimisticItem
+      });
+      for (const channel of rtcChannelsRef.current.values()) {
+        if (channel.readyState === "open") {
+          channel.send(payload);
+        }
+      }
+    }
 
     if (!cloudConnected) {
       const opItem = toOperationItem(normalized);
@@ -554,6 +1398,16 @@ export function RoomWorkspacePage() {
     } catch (error) {
       setHostError(error instanceof Error ? error.message : "Operation failed");
       setCloudConnected(false);
+      if (optimisticItem) {
+        if (optimisticItem.kind === "add-node" && optimisticItem.nodeId) {
+          pendingCreatedNodeIdsRef.current.delete(optimisticItem.nodeId);
+          deferredFinalMoveByNodeRef.current.delete(optimisticItem.nodeId);
+        }
+        setPendingOnlineByPeer((previous) => ({
+          ...previous,
+          [optimisticItem.peerId as PeerId]: previous[optimisticItem.peerId as PeerId].filter((item) => item.id !== optimisticItem?.id)
+        }));
+      }
       const opItem = toOperationItem(normalized);
       setOfflineQueueByPeer((previous) => ({
         ...previous,
@@ -657,8 +1511,8 @@ export function RoomWorkspacePage() {
       peerId: activePeerId,
       kind: "add-node",
       nodeId: makeId("node"),
-      x: 320 + Math.random() * 900,
-      y: 220 + Math.random() * 600,
+      x: 80 + Math.random() * 280,
+      y: 80 + Math.random() * 220,
       label: `Node ${state.nodes.length + 1}`,
       color: peerColor[activePeerId],
       updatedAtMs: Date.now()
@@ -802,15 +1656,16 @@ export function RoomWorkspacePage() {
                   />
                 ) : null}
 
-                {pendingStroke ? (
+                {pendingStrokes.map((pending) => (
                   <polyline
+                    key={`pending-${pending.id}`}
                     fill="none"
-                    stroke={pendingStroke.color}
+                    stroke={pending.color}
                     strokeOpacity={0.9}
-                    strokeWidth={pendingStroke.width}
-                    points={pendingStroke.points.map((point) => `${point.x},${point.y}`).join(" ")}
+                    strokeWidth={pending.width}
+                    points={pending.points.map((point) => `${point.x},${point.y}`).join(" ")}
                   />
-                ) : null}
+                ))}
               </svg>
 
               {displayState.assets.map((asset) => (
@@ -850,6 +1705,7 @@ export function RoomWorkspacePage() {
             <li>Room: {roomId}</li>
             <li>Operations: {state.operationCount}</li>
             <li>Cloud: {cloudConnected ? "connected" : "disconnected"}</li>
+            <li>Transport: {transportMode}</li>
             <li>Offline queue (active peer): {activePeerOfflineOperations.length}</li>
             <li>Offline queue (total): {countOfflineQueue(offlineQueueByPeer)}</li>
             <li>Nodes: {displayState.nodes.length}</li>
@@ -857,6 +1713,25 @@ export function RoomWorkspacePage() {
             <li>Assets: {displayState.assets.length}</li>
             <li>Annotations: {displayState.annotations.length}</li>
             <li>Strokes: {displayState.strokes.length}</li>
+          </ul>
+
+          <h2>RTC Diagnostics</h2>
+          <ul>
+            <li>Signal socket: {signalSocketState}</li>
+            <li>Known signal peers: {knownSignalPeers.length > 0 ? knownSignalPeers.join(", ") : "none"}</li>
+            <li>Offers sent/received: {rtcDiagnostics.offersSent} / {rtcDiagnostics.offersReceived}</li>
+            <li>Answers sent/received: {rtcDiagnostics.answersSent} / {rtcDiagnostics.answersReceived}</li>
+            <li>ICE sent/received: {rtcDiagnostics.iceSent} / {rtcDiagnostics.iceReceived}</li>
+          </ul>
+
+          <ul className="ops-list replay-stream-list">
+            {rtcPeerStatuses.map((status) => (
+              <li key={status.peerId}>
+                <span className="ops-meta">{status.peerId}</span>
+                <span>pc={status.connectionState} channel={status.channelState}</span>
+              </li>
+            ))}
+            {rtcPeerStatuses.length === 0 ? <li className="ops-empty">No RTC peers yet.</li> : null}
           </ul>
 
           <h2>Replay Timeline</h2>
@@ -867,7 +1742,14 @@ export function RoomWorkspacePage() {
               max={mergedOperations.length}
               value={replayCursor}
               onChange={(event) => {
-                setReplayCursor(Number(event.target.value));
+                const nextCursor = Number(event.target.value);
+                setReplayCursor(nextCursor);
+                if (nextCursor >= mergedOperations.length) {
+                  setFollowLiveReplay(true);
+                  setIsReplayPlaying(false);
+                  return;
+                }
+
                 setFollowLiveReplay(false);
               }}
             />
@@ -879,13 +1761,48 @@ export function RoomWorkspacePage() {
                 type="button"
                 className="action-btn tactical-btn"
                 onClick={() => {
+                  if (followLiveReplay) {
+                    setFollowLiveReplay(false);
+                    setReplayCursor(0);
+                    setIsReplayPlaying(true);
+                    return;
+                  }
+
+                  if (replayCursor >= mergedOperations.length) {
+                    setReplayCursor(0);
+                  }
+
+                  setIsReplayPlaying((value) => !value);
+                }}
+                disabled={mergedOperations.length === 0}
+              >
+                {isReplayPlaying ? "Pause" : "Play"}
+              </button>
+
+              <button
+                type="button"
+                className="action-btn tactical-btn"
+                onClick={() => {
                   setFollowLiveReplay(true);
                   setReplayCursor(mergedOperations.length);
+                  setIsReplayPlaying(false);
                 }}
               >
                 Jump Live
               </button>
             </div>
+
+            <label>
+              Playback speed ({replaySpeedOpsPerSecond} ops/s)
+              <input
+                type="range"
+                min={1}
+                max={120}
+                step={1}
+                value={replaySpeedOpsPerSecond}
+                onChange={(event) => setReplaySpeedOpsPerSecond(Number(event.target.value))}
+              />
+            </label>
           </div>
 
           <h2>Room Event Feed</h2>

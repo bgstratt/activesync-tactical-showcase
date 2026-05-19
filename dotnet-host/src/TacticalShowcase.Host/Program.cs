@@ -1,6 +1,9 @@
 using TacticalShowcase.Host.Contracts;
 using TacticalShowcase.Host.Ffi;
 using TacticalShowcase.Host.Runtime;
+using System.Collections.Concurrent;
+using System.Net.WebSockets;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls("http://localhost:5074");
@@ -26,7 +29,10 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+var signalRooms = new ConcurrentDictionary<string, ConcurrentDictionary<string, WebSocket>>(StringComparer.OrdinalIgnoreCase);
+
 app.UseCors("WebReactDev");
+app.UseWebSockets();
 
 app.MapGet("/", () => Results.Ok(new
 {
@@ -124,5 +130,223 @@ app.MapPost("/api/workspace/rooms/{roomId}/ops", (IRoomWorkspaceService workspac
         return Results.BadRequest(new { ok = false, message = ex.Message });
     }
 });
+
+app.MapGet("/api/workspace/rooms/{roomId}/ws", async (HttpContext context, IRoomWorkspaceService workspace, string roomId) =>
+{
+    if (!context.WebSockets.IsWebSocketRequest)
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await context.Response.WriteAsync("WebSocket upgrade required");
+        return;
+    }
+
+    using var socket = await context.WebSockets.AcceptWebSocketAsync();
+
+    try
+    {
+        await foreach (var operation in workspace.SubscribeOperations(roomId, context.RequestAborted))
+        {
+            if (socket.State != WebSocketState.Open)
+            {
+                break;
+            }
+
+            var payload = JsonSerializer.SerializeToUtf8Bytes(operation);
+            await socket.SendAsync(payload, WebSocketMessageType.Text, endOfMessage: true, context.RequestAborted);
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        // Normal shutdown when client disconnects or request aborts.
+    }
+    catch (WebSocketException)
+    {
+        // Socket dropped; endpoint cleanup below handles close state.
+    }
+    finally
+    {
+        if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+        {
+            await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "room stream closed", CancellationToken.None);
+        }
+    }
+});
+
+app.MapGet("/api/workspace/rooms/{roomId}/signal", async (HttpContext context, string roomId) =>
+{
+    if (!context.WebSockets.IsWebSocketRequest)
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await context.Response.WriteAsync("WebSocket upgrade required");
+        return;
+    }
+
+    var peerId = context.Request.Query["peerId"].ToString().Trim();
+    if (string.IsNullOrWhiteSpace(peerId))
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await context.Response.WriteAsync("peerId is required");
+        return;
+    }
+
+    using var socket = await context.WebSockets.AcceptWebSocketAsync();
+    var roomPeers = signalRooms.GetOrAdd(roomId, _ => new ConcurrentDictionary<string, WebSocket>(StringComparer.OrdinalIgnoreCase));
+
+    if (roomPeers.TryGetValue(peerId, out var existingSocket) && !ReferenceEquals(existingSocket, socket))
+    {
+        try
+        {
+            if (existingSocket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+            {
+                await existingSocket.CloseOutputAsync(WebSocketCloseStatus.PolicyViolation, "peer replaced", CancellationToken.None);
+            }
+        }
+        catch
+        {
+            // Best effort; stale socket cleanup will run its own disconnect path.
+        }
+    }
+
+    roomPeers[peerId] = socket;
+
+    try
+    {
+        var knownPeers = roomPeers.Keys.Where(value => !string.Equals(value, peerId, StringComparison.OrdinalIgnoreCase)).ToArray();
+        await SendJsonAsync(socket, new
+        {
+            type = "peers",
+            peers = knownPeers
+        }, context.RequestAborted);
+
+        await BroadcastToRoomAsync(roomPeers, new
+        {
+            type = "peer-joined",
+            peerId
+        }, excludePeerId: peerId, context.RequestAborted);
+
+        var buffer = new byte[64 * 1024];
+        while (socket.State == WebSocketState.Open && !context.RequestAborted.IsCancellationRequested)
+        {
+            var segment = new ArraySegment<byte>(buffer);
+            var result = await socket.ReceiveAsync(segment, context.RequestAborted);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                break;
+            }
+
+            if (result.MessageType != WebSocketMessageType.Text)
+            {
+                continue;
+            }
+
+            var json = JsonDocument.Parse(new ReadOnlyMemory<byte>(buffer, 0, result.Count));
+            if (!json.RootElement.TryGetProperty("to", out var toElement) || toElement.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var targetPeerId = toElement.GetString();
+            if (string.IsNullOrWhiteSpace(targetPeerId))
+            {
+                continue;
+            }
+
+            if (!roomPeers.TryGetValue(targetPeerId, out var targetSocket) || targetSocket.State != WebSocketState.Open)
+            {
+                continue;
+            }
+
+            using var envelope = JsonDocument.Parse(JsonSerializer.Serialize(new
+            {
+                type = json.RootElement.TryGetProperty("type", out var typeElement) && typeElement.ValueKind == JsonValueKind.String
+                    ? typeElement.GetString()
+                    : "signal",
+                from = peerId,
+                to = targetPeerId,
+                sdp = json.RootElement.TryGetProperty("sdp", out var sdpElement) && sdpElement.ValueKind == JsonValueKind.String
+                    ? sdpElement.GetString()
+                    : null,
+                candidate = json.RootElement.TryGetProperty("candidate", out var candidateElement) && candidateElement.ValueKind == JsonValueKind.String
+                    ? candidateElement.GetString()
+                    : null,
+                sdpMid = json.RootElement.TryGetProperty("sdpMid", out var midElement) && midElement.ValueKind == JsonValueKind.String
+                    ? midElement.GetString()
+                    : null,
+                sdpMLineIndex = json.RootElement.TryGetProperty("sdpMLineIndex", out var lineElement) && lineElement.ValueKind == JsonValueKind.Number
+                    ? lineElement.GetInt32()
+                    : (int?)null
+            }));
+
+            await targetSocket.SendAsync(
+                JsonSerializer.SerializeToUtf8Bytes(envelope.RootElement),
+                WebSocketMessageType.Text,
+                endOfMessage: true,
+                context.RequestAborted);
+        }
+    }
+    catch (OperationCanceledException)
+    {
+    }
+    catch (WebSocketException)
+    {
+    }
+    finally
+    {
+        if (roomPeers.TryGetValue(peerId, out var currentSocket) && ReferenceEquals(currentSocket, socket))
+        {
+            roomPeers.TryRemove(peerId, out _);
+        }
+
+        await BroadcastToRoomAsync(roomPeers, new
+        {
+            type = "peer-left",
+            peerId
+        }, excludePeerId: peerId, CancellationToken.None);
+
+        if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+        {
+            await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "signal closed", CancellationToken.None);
+        }
+    }
+});
+
+static async Task SendJsonAsync(WebSocket socket, object payload, CancellationToken cancellationToken)
+{
+    if (socket.State != WebSocketState.Open)
+    {
+        return;
+    }
+
+    await socket.SendAsync(JsonSerializer.SerializeToUtf8Bytes(payload), WebSocketMessageType.Text, endOfMessage: true, cancellationToken);
+}
+
+static async Task BroadcastToRoomAsync(
+    ConcurrentDictionary<string, WebSocket> roomPeers,
+    object payload,
+    string? excludePeerId,
+    CancellationToken cancellationToken)
+{
+    foreach (var (peerId, socket) in roomPeers)
+    {
+        if (!string.IsNullOrWhiteSpace(excludePeerId) && string.Equals(peerId, excludePeerId, StringComparison.OrdinalIgnoreCase))
+        {
+            continue;
+        }
+
+        if (socket.State != WebSocketState.Open)
+        {
+            continue;
+        }
+
+        try
+        {
+            await SendJsonAsync(socket, payload, cancellationToken);
+        }
+        catch
+        {
+            // Best-effort broadcast; stale socket cleanup happens on disconnect paths.
+        }
+    }
+}
 
 app.Run();

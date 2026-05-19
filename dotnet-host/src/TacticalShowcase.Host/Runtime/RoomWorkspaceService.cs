@@ -1,4 +1,6 @@
 using TacticalShowcase.Host.Contracts;
+using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 
 namespace TacticalShowcase.Host.Runtime;
 
@@ -8,6 +10,7 @@ public interface IRoomWorkspaceService
     WorkspaceEventsResponse GetEvents(string roomId, int take);
     WorkspaceOperationsResponse GetOperations(string roomId, int take);
     WorkspaceStateResponse ApplyOperation(string roomId, WorkspaceOperationRequest request);
+    IAsyncEnumerable<WorkspaceOperationItem> SubscribeOperations(string roomId, CancellationToken cancellationToken);
 }
 
 internal sealed class RoomWorkspaceService : IRoomWorkspaceService
@@ -85,7 +88,7 @@ internal sealed class RoomWorkspaceService : IRoomWorkspaceService
                     throw new InvalidOperationException($"Unsupported workspace operation '{request.Kind}'");
             }
 
-            room.Operations.Add(new WorkspaceOperationItem(
+            var operationItem = new WorkspaceOperationItem(
                 Id: $"op-{Guid.NewGuid():N}",
                 UpdatedAtMs: nowMs,
                 PeerId: peerId,
@@ -101,7 +104,9 @@ internal sealed class RoomWorkspaceService : IRoomWorkspaceService
                 Color: request.Color,
                 Width: request.Width,
                 Points: request.Points?.ToArray()
-            ));
+            );
+
+            room.Operations.Add(operationItem);
 
             room.UpdatedAtUtc = DateTimeOffset.UtcNow;
             if (room.Events.Count > 1200)
@@ -114,7 +119,51 @@ internal sealed class RoomWorkspaceService : IRoomWorkspaceService
                 room.Operations.RemoveRange(0, room.Operations.Count - 5000);
             }
 
+            if (room.OperationSubscribers.Count > 0)
+            {
+                room.OperationSubscribers.RemoveAll(writer => !writer.TryWrite(operationItem));
+            }
+
             return ToStateResponse(roomId, room);
+        }
+    }
+
+    public IAsyncEnumerable<WorkspaceOperationItem> SubscribeOperations(string roomId, CancellationToken cancellationToken)
+    {
+        var channel = Channel.CreateUnbounded<WorkspaceOperationItem>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false
+        });
+
+        lock (_sync)
+        {
+            var room = GetOrCreateRoom(roomId);
+            room.OperationSubscribers.Add(channel.Writer);
+        }
+
+        return StreamOperations(roomId, channel, cancellationToken);
+    }
+
+    private async IAsyncEnumerable<WorkspaceOperationItem> StreamOperations(
+        string roomId,
+        Channel<WorkspaceOperationItem> channel,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (var operation in channel.Reader.ReadAllAsync(cancellationToken))
+            {
+                yield return operation;
+            }
+        }
+        finally
+        {
+            lock (_sync)
+            {
+                var room = GetOrCreateRoom(roomId);
+                room.OperationSubscribers.Remove(channel.Writer);
+            }
         }
     }
 
@@ -275,6 +324,7 @@ internal sealed class RoomWorkspaceService : IRoomWorkspaceService
         public Dictionary<string, WorkspaceStrokeDto> Strokes { get; } = new(StringComparer.Ordinal);
         public List<WorkspaceEventItem> Events { get; } = [];
         public List<WorkspaceOperationItem> Operations { get; } = [];
+        public List<ChannelWriter<WorkspaceOperationItem>> OperationSubscribers { get; } = [];
         public DateTimeOffset UpdatedAtUtc { get; set; }
         public int OperationCount { get; set; }
     }
