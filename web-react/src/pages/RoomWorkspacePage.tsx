@@ -244,6 +244,14 @@ export function RoomWorkspacePage() {
   const [offlineQueueByPeer, setOfflineQueueByPeer] = useState<OfflineQueueByPeer>(createEmptyOfflineQueue());
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [activeStrokePoints, setActiveStrokePoints] = useState<WorkspacePoint[]>([]);
+  const [pendingStroke, setPendingStroke] = useState<{
+    id: string;
+    points: WorkspacePoint[];
+    color: string;
+    width: number;
+    peerId: string;
+  } | null>(null);
+  const [dragPreview, setDragPreview] = useState<{ nodeId: string; x: number; y: number } | null>(null);
   const [replayCursor, setReplayCursor] = useState(0);
   const [followLiveReplay, setFollowLiveReplay] = useState(true);
   const [cloudConnected, setCloudConnected] = useState(true);
@@ -390,6 +398,20 @@ export function RoomWorkspacePage() {
     }
   }, [operations.length, offlineQueueByPeer, followLiveReplay]);
 
+  useEffect(() => {
+    if (!pendingStroke) {
+      return;
+    }
+
+    const acknowledged = operations.some(
+      (op) => op.kind === "add-stroke" && op.nodeId === pendingStroke.id && op.peerId === pendingStroke.peerId
+    );
+
+    if (acknowledged) {
+      setPendingStroke(null);
+    }
+  }, [operations, pendingStroke]);
+
   const activePeerOfflineOperations = useMemo(() => offlineQueueByPeer[activePeerId], [activePeerId, offlineQueueByPeer]);
   const mergedOperations = useMemo(
     () => [...operations, ...activePeerOfflineOperations],
@@ -416,14 +438,11 @@ export function RoomWorkspacePage() {
       const y = Math.max(0, Math.min(workspaceHeight, event.clientY - rect.top));
 
       if (dragRef.current) {
-        void submitOperation({
-          peerId: activePeerId,
-          kind: "move-node",
+        setDragPreview({
           nodeId: dragRef.current.nodeId,
           x: x - dragRef.current.offsetX,
-          y: y - dragRef.current.offsetY,
-          updatedAtMs: Date.now()
-        }, false);
+          y: y - dragRef.current.offsetY
+        });
       }
 
       if (drawRef.current) {
@@ -434,14 +453,39 @@ export function RoomWorkspacePage() {
     }
 
     function onPointerUp() {
+      const dragged = dragRef.current;
+      const preview = dragPreview;
+      if (dragged && preview && dragged.nodeId === preview.nodeId) {
+        void submitOperation(
+          {
+            peerId: activePeerId,
+            kind: "move-node",
+            nodeId: dragged.nodeId,
+            x: preview.x,
+            y: preview.y,
+            updatedAtMs: Date.now()
+          },
+          false
+        );
+      }
+
       dragRef.current = null;
+      setDragPreview(null);
 
       const points = drawRef.current;
       if (points && points.length > 1) {
+        const strokeId = makeId("stroke");
+        setPendingStroke({
+          id: strokeId,
+          points,
+          color: peerColor[activePeerId],
+          width: 3,
+          peerId: activePeerId
+        });
         void submitOperation({
           peerId: activePeerId,
           kind: "add-stroke",
-          nodeId: makeId("stroke"),
+          nodeId: strokeId,
           points,
           color: peerColor[activePeerId],
           width: 3,
@@ -460,11 +504,27 @@ export function RoomWorkspacePage() {
       window.removeEventListener("mousemove", onPointerMove);
       window.removeEventListener("mouseup", onPointerUp);
     };
-  }, [activePeerId, roomId]);
+  }, [activePeerId, dragPreview, roomId]);
+
+  const renderedNodes = useMemo(() => {
+    if (!dragPreview) {
+      return displayState.nodes;
+    }
+
+    return displayState.nodes.map((node) =>
+      node.id === dragPreview.nodeId
+        ? {
+            ...node,
+            x: dragPreview.x,
+            y: dragPreview.y
+          }
+        : node
+    );
+  }, [displayState.nodes, dragPreview]);
 
   const nodeById = useMemo(() => {
-    return new Map(displayState.nodes.map((node) => [node.id, node]));
-  }, [displayState.nodes]);
+    return new Map(renderedNodes.map((node) => [node.id, node]));
+  }, [renderedNodes]);
 
   async function submitOperation(operation: WorkspaceOperationRequest, announce = true) {
     const normalized = {
@@ -741,6 +801,16 @@ export function RoomWorkspacePage() {
                     points={activeStrokePoints.map((point) => `${point.x},${point.y}`).join(" ")}
                   />
                 ) : null}
+
+                {pendingStroke ? (
+                  <polyline
+                    fill="none"
+                    stroke={pendingStroke.color}
+                    strokeOpacity={0.9}
+                    strokeWidth={pendingStroke.width}
+                    points={pendingStroke.points.map((point) => `${point.x},${point.y}`).join(" ")}
+                  />
+                ) : null}
               </svg>
 
               {displayState.assets.map((asset) => (
@@ -757,7 +827,7 @@ export function RoomWorkspacePage() {
                 </div>
               ))}
 
-              {displayState.nodes.map((node) => (
+              {renderedNodes.map((node) => (
                 <div
                   key={node.id}
                   className={selectedNodeId === node.id ? "workspace-node selected" : "workspace-node"}
