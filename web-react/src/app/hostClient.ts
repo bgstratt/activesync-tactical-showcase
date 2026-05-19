@@ -8,6 +8,7 @@ import type {
   ReplayEventsResponse,
   ReplicationTopologyResponse,
   WorkspaceEventsResponse,
+  WorkspaceOperationsResponse,
   WorkspaceOperationRequest,
   WorkspaceStateResponse,
   TacticalActionRequest,
@@ -144,6 +145,11 @@ export async function fetchWorkspaceRoomState(roomId: string): Promise<Workspace
 export async function fetchWorkspaceRoomEvents(roomId: string, take = 120): Promise<WorkspaceEventsResponse> {
   const response = await fetch(`${getBaseUrl()}/api/workspace/rooms/${encodeURIComponent(roomId)}/events?take=${take}`);
   return parseResponse<WorkspaceEventsResponse>(response);
+}
+
+export async function fetchWorkspaceRoomOperations(roomId: string, take = 2000): Promise<WorkspaceOperationsResponse> {
+  const response = await fetch(`${getBaseUrl()}/api/workspace/rooms/${encodeURIComponent(roomId)}/operations?take=${take}`);
+  return parseResponse<WorkspaceOperationsResponse>(response);
 }
 
 export async function applyWorkspaceRoomOperation(roomId: string, operation: WorkspaceOperationRequest): Promise<WorkspaceStateResponse> {

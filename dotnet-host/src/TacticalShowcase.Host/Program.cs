@@ -108,6 +108,11 @@ app.MapGet("/api/workspace/rooms/{roomId}/events", (IRoomWorkspaceService worksp
     return Results.Ok(workspace.GetEvents(roomId, take ?? 120));
 });
 
+app.MapGet("/api/workspace/rooms/{roomId}/operations", (IRoomWorkspaceService workspace, string roomId, int? take) =>
+{
+    return Results.Ok(workspace.GetOperations(roomId, take ?? 2000));
+});
+
 app.MapPost("/api/workspace/rooms/{roomId}/ops", (IRoomWorkspaceService workspace, string roomId, WorkspaceOperationRequest request) =>
 {
     try

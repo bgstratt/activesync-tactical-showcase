@@ -267,3 +267,27 @@ export interface WorkspaceEventsResponse {
   updatedAtUtc: string;
   events: WorkspaceEventItem[];
 }
+
+export interface WorkspaceOperationItem {
+  id: string;
+  updatedAtMs: number;
+  peerId: string;
+  kind: string;
+  nodeId: string | null;
+  fromNodeId: string | null;
+  toNodeId: string | null;
+  x: number | null;
+  y: number | null;
+  label: string | null;
+  text: string | null;
+  assetName: string | null;
+  color: string | null;
+  width: number | null;
+  points: WorkspacePoint[] | null;
+}
+
+export interface WorkspaceOperationsResponse {
+  roomId: string;
+  updatedAtUtc: string;
+  operations: WorkspaceOperationItem[];
+}

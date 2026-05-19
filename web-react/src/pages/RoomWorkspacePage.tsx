@@ -4,10 +4,12 @@ import { useSearchParams } from "react-router-dom";
 import {
   applyWorkspaceRoomOperation,
   fetchWorkspaceRoomEvents,
+  fetchWorkspaceRoomOperations,
   fetchWorkspaceRoomState
 } from "../app/hostClient";
 import type {
   WorkspaceEventItem,
+  WorkspaceOperationItem,
   WorkspaceOperationRequest,
   WorkspacePoint,
   WorkspaceStateResponse
@@ -26,6 +28,7 @@ const peerColor: Record<PeerId, string> = {
 
 const workspaceWidth = 2200;
 const workspaceHeight = 1400;
+const offlineQueueStoragePrefix = "room-workspace:offline-queue:";
 
 const emptyState: WorkspaceStateResponse = {
   roomId: "",
@@ -51,6 +54,167 @@ function generateRoomId(): string {
   return `demo-${token}`;
 }
 
+function replayRoomState(operations: WorkspaceOperationItem[], count: number, roomId: string): WorkspaceStateResponse {
+  const capped = Math.max(0, Math.min(count, operations.length));
+  const nodes = new Map<string, WorkspaceStateResponse["nodes"][number]>();
+  const edges = new Map<string, WorkspaceStateResponse["edges"][number]>();
+  const assets = new Map<string, WorkspaceStateResponse["assets"][number]>();
+  const annotations = new Map<string, WorkspaceStateResponse["annotations"][number]>();
+  const strokes = new Map<string, WorkspaceStateResponse["strokes"][number]>();
+
+  for (let i = 0; i < capped; i += 1) {
+    const op = operations[i];
+
+    if (op.kind === "add-node" && op.nodeId) {
+      const existing = nodes.get(op.nodeId);
+      if (!existing || op.updatedAtMs >= existing.updatedAtMs) {
+        nodes.set(op.nodeId, {
+          id: op.nodeId,
+          x: op.x ?? 320,
+          y: op.y ?? 260,
+          label: op.label ?? "Node",
+          color: op.color ?? "#2563eb",
+          updatedAtMs: op.updatedAtMs,
+          updatedBy: op.peerId
+        });
+      }
+      continue;
+    }
+
+    if (op.kind === "move-node" && op.nodeId) {
+      const existing = nodes.get(op.nodeId);
+      if (existing && op.updatedAtMs >= existing.updatedAtMs) {
+        nodes.set(op.nodeId, {
+          ...existing,
+          x: op.x ?? existing.x,
+          y: op.y ?? existing.y,
+          updatedAtMs: op.updatedAtMs,
+          updatedBy: op.peerId
+        });
+      }
+      continue;
+    }
+
+    if (op.kind === "add-edge" && op.fromNodeId && op.toNodeId) {
+      const edgeId = `edge:${op.fromNodeId}:${op.toNodeId}`;
+      const existing = edges.get(edgeId);
+      if (!existing || op.updatedAtMs >= existing.updatedAtMs) {
+        edges.set(edgeId, {
+          id: edgeId,
+          fromNodeId: op.fromNodeId,
+          toNodeId: op.toNodeId,
+          updatedAtMs: op.updatedAtMs,
+          updatedBy: op.peerId
+        });
+      }
+      continue;
+    }
+
+    if (op.kind === "add-asset" && op.nodeId) {
+      const existing = assets.get(op.nodeId);
+      if (!existing || op.updatedAtMs >= existing.updatedAtMs) {
+        assets.set(op.nodeId, {
+          id: op.nodeId,
+          x: op.x ?? 360,
+          y: op.y ?? 300,
+          name: op.assetName ?? "asset.bin",
+          updatedAtMs: op.updatedAtMs,
+          updatedBy: op.peerId
+        });
+      }
+      continue;
+    }
+
+    if (op.kind === "add-annotation" && op.nodeId) {
+      const existing = annotations.get(op.nodeId);
+      if (!existing || op.updatedAtMs >= existing.updatedAtMs) {
+        annotations.set(op.nodeId, {
+          id: op.nodeId,
+          x: op.x ?? 300,
+          y: op.y ?? 300,
+          text: op.text ?? "Untitled note",
+          updatedAtMs: op.updatedAtMs,
+          updatedBy: op.peerId
+        });
+      }
+      continue;
+    }
+
+    if (op.kind === "add-stroke" && op.nodeId && op.points && op.points.length > 1) {
+      const existing = strokes.get(op.nodeId);
+      if (!existing || op.updatedAtMs >= existing.updatedAtMs) {
+        strokes.set(op.nodeId, {
+          id: op.nodeId,
+          points: op.points,
+          color: op.color ?? "#2563eb",
+          width: op.width ?? 3,
+          updatedAtMs: op.updatedAtMs,
+          updatedBy: op.peerId
+        });
+      }
+    }
+  }
+
+  return {
+    roomId,
+    updatedAtUtc: new Date().toISOString(),
+    nodes: Array.from(nodes.values()),
+    edges: Array.from(edges.values()),
+    assets: Array.from(assets.values()),
+    annotations: Array.from(annotations.values()),
+    strokes: Array.from(strokes.values()),
+    operationCount: capped
+  };
+}
+
+function toOperationItem(operation: WorkspaceOperationRequest): WorkspaceOperationItem {
+  return {
+    id: makeId("local-op"),
+    updatedAtMs: operation.updatedAtMs ?? Date.now(),
+    peerId: operation.peerId,
+    kind: operation.kind,
+    nodeId: operation.nodeId ?? null,
+    fromNodeId: operation.fromNodeId ?? null,
+    toNodeId: operation.toNodeId ?? null,
+    x: operation.x ?? null,
+    y: operation.y ?? null,
+    label: operation.label ?? null,
+    text: operation.text ?? null,
+    assetName: operation.assetName ?? null,
+    color: operation.color ?? null,
+    width: operation.width ?? null,
+    points: operation.points ?? null
+  };
+}
+
+function toOperationRequest(item: WorkspaceOperationItem): WorkspaceOperationRequest {
+  return {
+    peerId: item.peerId,
+    kind: item.kind,
+    nodeId: item.nodeId ?? undefined,
+    fromNodeId: item.fromNodeId ?? undefined,
+    toNodeId: item.toNodeId ?? undefined,
+    x: item.x ?? undefined,
+    y: item.y ?? undefined,
+    label: item.label ?? undefined,
+    text: item.text ?? undefined,
+    assetName: item.assetName ?? undefined,
+    color: item.color ?? undefined,
+    width: item.width ?? undefined,
+    points: item.points ?? undefined,
+    updatedAtMs: item.updatedAtMs
+  };
+}
+
+function enqueueOfflineOperation(queue: WorkspaceOperationItem[], next: WorkspaceOperationItem): WorkspaceOperationItem[] {
+  if (next.kind === "move-node" && next.nodeId) {
+    const filtered = queue.filter((entry) => !(entry.kind === "move-node" && entry.nodeId === next.nodeId && entry.peerId === next.peerId));
+    return [...filtered, next];
+  }
+
+  return [...queue, next];
+}
+
 export function RoomWorkspacePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [roomId, setRoomId] = useState(searchParams.get("room")?.trim() || generateRoomId());
@@ -59,8 +223,13 @@ export function RoomWorkspacePage() {
   const [annotationDraft, setAnnotationDraft] = useState("Decision note");
   const [state, setState] = useState<WorkspaceStateResponse>(emptyState);
   const [events, setEvents] = useState<WorkspaceEventItem[]>([]);
+  const [operations, setOperations] = useState<WorkspaceOperationItem[]>([]);
+  const [offlineOperations, setOfflineOperations] = useState<WorkspaceOperationItem[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [activeStrokePoints, setActiveStrokePoints] = useState<WorkspacePoint[]>([]);
+  const [replayCursor, setReplayCursor] = useState(0);
+  const [followLiveReplay, setFollowLiveReplay] = useState(true);
+  const [cloudConnected, setCloudConnected] = useState(true);
   const [isBusy, setIsBusy] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [hostError, setHostError] = useState<string | null>(null);
@@ -78,18 +247,49 @@ export function RoomWorkspacePage() {
   }, [roomId, setSearchParams]);
 
   useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(`${offlineQueueStoragePrefix}${roomId}`);
+      if (!raw) {
+        setOfflineOperations([]);
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as WorkspaceOperationItem[];
+      setOfflineOperations(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setOfflineOperations([]);
+    }
+  }, [roomId]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(`${offlineQueueStoragePrefix}${roomId}`, JSON.stringify(offlineOperations));
+    } catch {
+      // Non-fatal when storage is unavailable.
+    }
+  }, [offlineOperations, roomId]);
+
+  useEffect(() => {
     let isCanceled = false;
+
+    if (!cloudConnected) {
+      return () => {
+        isCanceled = true;
+      };
+    }
 
     async function refresh() {
       try {
-        const [snapshot, latestEvents] = await Promise.all([
+        const [snapshot, latestEvents, latestOperations] = await Promise.all([
           fetchWorkspaceRoomState(roomId),
-          fetchWorkspaceRoomEvents(roomId, 120)
+          fetchWorkspaceRoomEvents(roomId, 120),
+          fetchWorkspaceRoomOperations(roomId, 2000)
         ]);
 
         if (!isCanceled) {
           setState(snapshot);
           setEvents(latestEvents.events);
+          setOperations(latestOperations.operations);
           setHostError(null);
         }
       } catch (error) {
@@ -108,7 +308,74 @@ export function RoomWorkspacePage() {
       isCanceled = true;
       window.clearInterval(intervalId);
     };
-  }, [roomId]);
+  }, [cloudConnected, roomId]);
+
+  useEffect(() => {
+    if (!cloudConnected || offlineOperations.length === 0) {
+      return;
+    }
+
+    let isCanceled = false;
+
+    async function flushOfflineQueue() {
+      setIsBusy(true);
+      try {
+        for (const item of offlineOperations) {
+          if (isCanceled) {
+            return;
+          }
+
+          await applyWorkspaceRoomOperation(roomId, toOperationRequest(item));
+        }
+
+        if (!isCanceled) {
+          const [snapshot, latestEvents, latestOperations] = await Promise.all([
+            fetchWorkspaceRoomState(roomId),
+            fetchWorkspaceRoomEvents(roomId, 120),
+            fetchWorkspaceRoomOperations(roomId, 2000)
+          ]);
+
+          setState(snapshot);
+          setEvents(latestEvents.events);
+          setOperations(latestOperations.operations);
+          setOfflineOperations([]);
+          setStatusMessage(`Flushed ${offlineOperations.length} offline operation(s) to shared room`);
+          setHostError(null);
+        }
+      } catch (error) {
+        if (!isCanceled) {
+          setHostError(error instanceof Error ? error.message : "Unable to flush offline operations");
+          setCloudConnected(false);
+        }
+      } finally {
+        if (!isCanceled) {
+          setIsBusy(false);
+        }
+      }
+    }
+
+    void flushOfflineQueue();
+
+    return () => {
+      isCanceled = true;
+    };
+  }, [cloudConnected, offlineOperations, roomId]);
+
+  useEffect(() => {
+    if (followLiveReplay) {
+      setReplayCursor(operations.length + offlineOperations.length);
+    }
+  }, [operations.length, offlineOperations.length, followLiveReplay]);
+
+  const mergedOperations = useMemo(() => [...operations, ...offlineOperations], [offlineOperations, operations]);
+
+  const displayState = useMemo(() => {
+    if (followLiveReplay) {
+      return replayRoomState(mergedOperations, mergedOperations.length, roomId);
+    }
+
+    return replayRoomState(mergedOperations, replayCursor, roomId);
+  }, [followLiveReplay, mergedOperations, replayCursor, roomId]);
 
   useEffect(() => {
     function onPointerMove(event: MouseEvent) {
@@ -169,19 +436,39 @@ export function RoomWorkspacePage() {
   }, [activePeerId, roomId]);
 
   const nodeById = useMemo(() => {
-    return new Map(state.nodes.map((node) => [node.id, node]));
-  }, [state.nodes]);
+    return new Map(displayState.nodes.map((node) => [node.id, node]));
+  }, [displayState.nodes]);
 
   async function submitOperation(operation: WorkspaceOperationRequest, announce = true) {
+    const normalized = {
+      ...operation,
+      updatedAtMs: operation.updatedAtMs ?? Date.now()
+    };
+
+    if (!cloudConnected) {
+      const opItem = toOperationItem(normalized);
+      setOfflineOperations((previous) => enqueueOfflineOperation(previous, opItem));
+      if (announce) {
+        setStatusMessage(`Queued offline ${operation.kind}`);
+      }
+      return;
+    }
+
     setIsBusy(true);
     try {
-      const nextState = await applyWorkspaceRoomOperation(roomId, operation);
+      const nextState = await applyWorkspaceRoomOperation(roomId, normalized);
       setState(nextState);
       if (announce) {
         setStatusMessage(`Applied ${operation.kind}`);
       }
     } catch (error) {
       setHostError(error instanceof Error ? error.message : "Operation failed");
+      setCloudConnected(false);
+      const opItem = toOperationItem(normalized);
+      setOfflineOperations((previous) => enqueueOfflineOperation(previous, opItem));
+      if (announce) {
+        setStatusMessage(`Host unavailable. Queued offline ${operation.kind}`);
+      }
     } finally {
       setIsBusy(false);
     }
@@ -360,6 +647,16 @@ export function RoomWorkspacePage() {
             Upload Asset
             <input type="file" onChange={handleAssetUpload} multiple />
           </label>
+          <button
+            type="button"
+            className="action-btn tactical-btn"
+            onClick={() => {
+              setCloudConnected((value) => !value);
+              setStatusMessage(cloudConnected ? "Cloud disconnected (offline queue active)" : "Cloud reconnecting...");
+            }}
+          >
+            {cloudConnected ? "Disconnect Cloud" : "Reconnect Cloud"}
+          </button>
         </div>
         {statusMessage ? <p className="topology-note">{statusMessage}</p> : null}
         {hostError ? <p className="error-text">Host: {hostError}</p> : null}
@@ -370,7 +667,7 @@ export function RoomWorkspacePage() {
           <div className="workspace-scroll">
             <div className="workspace-surface" ref={workspaceRef} onMouseDown={handleWorkspaceMouseDown} role="presentation">
               <svg className="workspace-edges" width={workspaceWidth} height={workspaceHeight}>
-                {state.edges.map((edge) => {
+                {displayState.edges.map((edge) => {
                   const from = nodeById.get(edge.fromNodeId);
                   const to = nodeById.get(edge.toNodeId);
                   if (!from || !to) {
@@ -391,7 +688,7 @@ export function RoomWorkspacePage() {
                   );
                 })}
 
-                {state.strokes.map((stroke) => (
+                {displayState.strokes.map((stroke) => (
                   <polyline
                     key={stroke.id}
                     fill="none"
@@ -413,21 +710,21 @@ export function RoomWorkspacePage() {
                 ) : null}
               </svg>
 
-              {state.assets.map((asset) => (
+              {displayState.assets.map((asset) => (
                 <div key={asset.id} className="workspace-asset" style={{ left: asset.x, top: asset.y }}>
                   <strong>{asset.name}</strong>
                   <small>from {asset.updatedBy}</small>
                 </div>
               ))}
 
-              {state.annotations.map((annotation) => (
+              {displayState.annotations.map((annotation) => (
                 <div key={annotation.id} className="workspace-note" style={{ left: annotation.x, top: annotation.y }}>
                   <strong>{annotation.text}</strong>
                   <small>{annotation.updatedBy}</small>
                 </div>
               ))}
 
-              {state.nodes.map((node) => (
+              {displayState.nodes.map((node) => (
                 <div
                   key={node.id}
                   className={selectedNodeId === node.id ? "workspace-node selected" : "workspace-node"}
@@ -449,12 +746,43 @@ export function RoomWorkspacePage() {
           <ul>
             <li>Room: {roomId}</li>
             <li>Operations: {state.operationCount}</li>
-            <li>Nodes: {state.nodes.length}</li>
-            <li>Edges: {state.edges.length}</li>
-            <li>Assets: {state.assets.length}</li>
-            <li>Annotations: {state.annotations.length}</li>
-            <li>Strokes: {state.strokes.length}</li>
+            <li>Cloud: {cloudConnected ? "connected" : "disconnected"}</li>
+            <li>Offline queue: {offlineOperations.length}</li>
+            <li>Nodes: {displayState.nodes.length}</li>
+            <li>Edges: {displayState.edges.length}</li>
+            <li>Assets: {displayState.assets.length}</li>
+            <li>Annotations: {displayState.annotations.length}</li>
+            <li>Strokes: {displayState.strokes.length}</li>
           </ul>
+
+          <h2>Replay Timeline</h2>
+          <div className="tool-group">
+            <input
+              type="range"
+              min={0}
+              max={mergedOperations.length}
+              value={replayCursor}
+              onChange={(event) => {
+                setReplayCursor(Number(event.target.value));
+                setFollowLiveReplay(false);
+              }}
+            />
+            <p className="topology-note">
+              Cursor {replayCursor} / {mergedOperations.length} {followLiveReplay ? "(live)" : "(replay)"}
+            </p>
+            <div className="action-row">
+              <button
+                type="button"
+                className="action-btn tactical-btn"
+                onClick={() => {
+                  setFollowLiveReplay(true);
+                  setReplayCursor(mergedOperations.length);
+                }}
+              >
+                Jump Live
+              </button>
+            </div>
+          </div>
 
           <h2>Room Event Feed</h2>
           <ul className="ops-list replay-stream-list">

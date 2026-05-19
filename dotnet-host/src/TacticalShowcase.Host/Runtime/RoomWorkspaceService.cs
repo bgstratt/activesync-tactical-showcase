@@ -6,6 +6,7 @@ public interface IRoomWorkspaceService
 {
     WorkspaceStateResponse GetState(string roomId);
     WorkspaceEventsResponse GetEvents(string roomId, int take);
+    WorkspaceOperationsResponse GetOperations(string roomId, int take);
     WorkspaceStateResponse ApplyOperation(string roomId, WorkspaceOperationRequest request);
 }
 
@@ -34,6 +35,20 @@ internal sealed class RoomWorkspaceService : IRoomWorkspaceService
                 .ToArray();
 
             return new WorkspaceEventsResponse(roomId, room.UpdatedAtUtc, events);
+        }
+    }
+
+    public WorkspaceOperationsResponse GetOperations(string roomId, int take)
+    {
+        lock (_sync)
+        {
+            var room = GetOrCreateRoom(roomId);
+            var normalizedTake = Math.Clamp(take, 1, 2000);
+            var operations = room.Operations
+                .TakeLast(normalizedTake)
+                .ToArray();
+
+            return new WorkspaceOperationsResponse(roomId, room.UpdatedAtUtc, operations);
         }
     }
 
@@ -70,10 +85,33 @@ internal sealed class RoomWorkspaceService : IRoomWorkspaceService
                     throw new InvalidOperationException($"Unsupported workspace operation '{request.Kind}'");
             }
 
+            room.Operations.Add(new WorkspaceOperationItem(
+                Id: $"op-{Guid.NewGuid():N}",
+                UpdatedAtMs: nowMs,
+                PeerId: peerId,
+                Kind: kind,
+                NodeId: request.NodeId,
+                FromNodeId: request.FromNodeId,
+                ToNodeId: request.ToNodeId,
+                X: request.X,
+                Y: request.Y,
+                Label: request.Label,
+                Text: request.Text,
+                AssetName: request.AssetName,
+                Color: request.Color,
+                Width: request.Width,
+                Points: request.Points?.ToArray()
+            ));
+
             room.UpdatedAtUtc = DateTimeOffset.UtcNow;
             if (room.Events.Count > 1200)
             {
                 room.Events.RemoveRange(0, room.Events.Count - 1200);
+            }
+
+            if (room.Operations.Count > 5000)
+            {
+                room.Operations.RemoveRange(0, room.Operations.Count - 5000);
             }
 
             return ToStateResponse(roomId, room);
@@ -236,6 +274,7 @@ internal sealed class RoomWorkspaceService : IRoomWorkspaceService
         public Dictionary<string, WorkspaceAnnotationDto> Annotations { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, WorkspaceStrokeDto> Strokes { get; } = new(StringComparer.Ordinal);
         public List<WorkspaceEventItem> Events { get; } = [];
+        public List<WorkspaceOperationItem> Operations { get; } = [];
         public DateTimeOffset UpdatedAtUtc { get; set; }
         public int OperationCount { get; set; }
     }

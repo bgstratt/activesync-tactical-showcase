@@ -250,3 +250,27 @@ public sealed record WorkspaceEventsResponse(
     DateTimeOffset UpdatedAtUtc,
     IReadOnlyList<WorkspaceEventItem> Events
 );
+
+public sealed record WorkspaceOperationItem(
+    string Id,
+    long UpdatedAtMs,
+    string PeerId,
+    string Kind,
+    string? NodeId,
+    string? FromNodeId,
+    string? ToNodeId,
+    double? X,
+    double? Y,
+    string? Label,
+    string? Text,
+    string? AssetName,
+    string? Color,
+    double? Width,
+    IReadOnlyList<WorkspacePointDto>? Points
+);
+
+public sealed record WorkspaceOperationsResponse(
+    string RoomId,
+    DateTimeOffset UpdatedAtUtc,
+    IReadOnlyList<WorkspaceOperationItem> Operations
+);
