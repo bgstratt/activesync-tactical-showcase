@@ -162,3 +162,91 @@ public sealed record TacticalActionRequest(
 public sealed record TacticalActionResponse(bool Ok, string Message, TacticalBoardStateResponse State);
 
 public sealed record CardBattleActionResponse(bool Ok, string Message, CardBattleStateResponse State);
+
+public sealed record WorkspacePointDto(double X, double Y);
+
+public sealed record WorkspaceNodeDto(
+    string Id,
+    double X,
+    double Y,
+    string Label,
+    string Color,
+    long UpdatedAtMs,
+    string UpdatedBy
+);
+
+public sealed record WorkspaceEdgeDto(
+    string Id,
+    string FromNodeId,
+    string ToNodeId,
+    long UpdatedAtMs,
+    string UpdatedBy
+);
+
+public sealed record WorkspaceAssetDto(
+    string Id,
+    double X,
+    double Y,
+    string Name,
+    long UpdatedAtMs,
+    string UpdatedBy
+);
+
+public sealed record WorkspaceAnnotationDto(
+    string Id,
+    double X,
+    double Y,
+    string Text,
+    long UpdatedAtMs,
+    string UpdatedBy
+);
+
+public sealed record WorkspaceStrokeDto(
+    string Id,
+    IReadOnlyList<WorkspacePointDto> Points,
+    string Color,
+    double Width,
+    long UpdatedAtMs,
+    string UpdatedBy
+);
+
+public sealed record WorkspaceStateResponse(
+    string RoomId,
+    DateTimeOffset UpdatedAtUtc,
+    IReadOnlyList<WorkspaceNodeDto> Nodes,
+    IReadOnlyList<WorkspaceEdgeDto> Edges,
+    IReadOnlyList<WorkspaceAssetDto> Assets,
+    IReadOnlyList<WorkspaceAnnotationDto> Annotations,
+    IReadOnlyList<WorkspaceStrokeDto> Strokes,
+    int OperationCount
+);
+
+public sealed record WorkspaceOperationRequest(
+    string PeerId,
+    string Kind,
+    string? NodeId,
+    string? FromNodeId,
+    string? ToNodeId,
+    double? X,
+    double? Y,
+    string? Label,
+    string? Text,
+    string? AssetName,
+    string? Color,
+    double? Width,
+    IReadOnlyList<WorkspacePointDto>? Points,
+    long? UpdatedAtMs
+);
+
+public sealed record WorkspaceEventItem(
+    long UpdatedAtMs,
+    string PeerId,
+    string Kind,
+    string Message
+);
+
+public sealed record WorkspaceEventsResponse(
+    string RoomId,
+    DateTimeOffset UpdatedAtUtc,
+    IReadOnlyList<WorkspaceEventItem> Events
+);

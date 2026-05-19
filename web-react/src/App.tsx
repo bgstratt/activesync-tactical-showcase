@@ -7,6 +7,7 @@ import { LandingPage } from "./pages/LandingPage";
 import { InfiniteWorkspacePage } from "./pages/InfiniteWorkspacePage";
 import { PixelSandboxPage } from "./pages/PixelSandboxPage";
 import { ReplayInspectorPage } from "./pages/ReplayInspectorPage";
+import { RoomWorkspacePage } from "./pages/RoomWorkspacePage";
 import { TacticalStrategyPage } from "./pages/TacticalStrategyPage";
 
 export function App() {
@@ -24,7 +25,9 @@ export function App() {
         <Route path="/features/offline" element={<FeaturePage routePath="/features/offline" />} />
         <Route path="/features/replay" element={<FeaturePage routePath="/features/replay" />} />
         <Route path="/modes/tactical-strategy" element={<TacticalStrategyPage />} />
-        <Route path="/modes/infinite-workspace" element={<InfiniteWorkspacePage />} />
+        <Route path="/modes/isolated-local-runtime" element={<InfiniteWorkspacePage />} />
+        <Route path="/modes/infinite-workspace" element={<RoomWorkspacePage />} />
+        <Route path="/modes/room-workspace" element={<RoomWorkspacePage />} />
         <Route path="/modes/dungeon-builder" element={<DungeonBuilderPage />} />
         <Route path="/modes/pixel-sandbox" element={<PixelSandboxPage />} />
         <Route path="/modes/card-battle" element={<CardBattlePage />} />

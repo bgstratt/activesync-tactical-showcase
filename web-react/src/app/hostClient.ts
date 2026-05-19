@@ -7,6 +7,9 @@ import type {
   PeerActionResponse,
   ReplayEventsResponse,
   ReplicationTopologyResponse,
+  WorkspaceEventsResponse,
+  WorkspaceOperationRequest,
+  WorkspaceStateResponse,
   TacticalActionRequest,
   TacticalActionResponse,
   TacticalBoardState
@@ -131,4 +134,26 @@ export async function applyCardBattleAction(action: TacticalActionRequest): Prom
   });
 
   return parseResponse<CardBattleActionResponse>(response);
+}
+
+export async function fetchWorkspaceRoomState(roomId: string): Promise<WorkspaceStateResponse> {
+  const response = await fetch(`${getBaseUrl()}/api/workspace/rooms/${encodeURIComponent(roomId)}/state`);
+  return parseResponse<WorkspaceStateResponse>(response);
+}
+
+export async function fetchWorkspaceRoomEvents(roomId: string, take = 120): Promise<WorkspaceEventsResponse> {
+  const response = await fetch(`${getBaseUrl()}/api/workspace/rooms/${encodeURIComponent(roomId)}/events?take=${take}`);
+  return parseResponse<WorkspaceEventsResponse>(response);
+}
+
+export async function applyWorkspaceRoomOperation(roomId: string, operation: WorkspaceOperationRequest): Promise<WorkspaceStateResponse> {
+  const response = await fetch(`${getBaseUrl()}/api/workspace/rooms/${encodeURIComponent(roomId)}/ops`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(operation)
+  });
+
+  return parseResponse<WorkspaceStateResponse>(response);
 }

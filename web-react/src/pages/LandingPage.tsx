@@ -23,7 +23,7 @@ export function LandingPage() {
         </p>
         <div className="hero-actions">
           <Link to="/modes/infinite-workspace" className="cta-primary">
-            Launch Infinite Workspace
+            Launch Room-Backed Workspace
           </Link>
           <Link to="/diagnostics/ops" className="cta-secondary">
             Open Operation Stream

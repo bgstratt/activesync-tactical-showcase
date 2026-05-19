@@ -7,6 +7,7 @@ builder.WebHost.UseUrls("http://localhost:5074");
 
 builder.Services.AddSingleton<INativeRuntimeProbe, NativeRuntimeProbe>();
 builder.Services.AddSingleton<IRuntimeReplicationService, RuntimeReplicationService>();
+builder.Services.AddSingleton<IRoomWorkspaceService, RoomWorkspaceService>();
 
 builder.Services.AddCors(options =>
 {
@@ -95,6 +96,28 @@ app.MapPost("/api/card-battle/action", (IRuntimeReplicationService runtime, Tact
 app.MapPost("/api/scenarios/run", (IRuntimeReplicationService runtime, DemoScenarioRunRequest request) =>
 {
     return Results.Ok(runtime.RunDemoScenario(request.ScenarioId));
+});
+
+app.MapGet("/api/workspace/rooms/{roomId}/state", (IRoomWorkspaceService workspace, string roomId) =>
+{
+    return Results.Ok(workspace.GetState(roomId));
+});
+
+app.MapGet("/api/workspace/rooms/{roomId}/events", (IRoomWorkspaceService workspace, string roomId, int? take) =>
+{
+    return Results.Ok(workspace.GetEvents(roomId, take ?? 120));
+});
+
+app.MapPost("/api/workspace/rooms/{roomId}/ops", (IRoomWorkspaceService workspace, string roomId, WorkspaceOperationRequest request) =>
+{
+    try
+    {
+        return Results.Ok(workspace.ApplyOperation(roomId, request));
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { ok = false, message = ex.Message });
+    }
 });
 
 app.Run();

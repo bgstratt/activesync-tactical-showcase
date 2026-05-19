@@ -176,3 +176,94 @@ export interface CardBattleActionResponse {
   message: string;
   state: CardBattleState;
 }
+
+export interface WorkspacePoint {
+  x: number;
+  y: number;
+}
+
+export interface WorkspaceNode {
+  id: string;
+  x: number;
+  y: number;
+  label: string;
+  color: string;
+  updatedAtMs: number;
+  updatedBy: string;
+}
+
+export interface WorkspaceEdge {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+  updatedAtMs: number;
+  updatedBy: string;
+}
+
+export interface WorkspaceAsset {
+  id: string;
+  x: number;
+  y: number;
+  name: string;
+  updatedAtMs: number;
+  updatedBy: string;
+}
+
+export interface WorkspaceAnnotation {
+  id: string;
+  x: number;
+  y: number;
+  text: string;
+  updatedAtMs: number;
+  updatedBy: string;
+}
+
+export interface WorkspaceStroke {
+  id: string;
+  points: WorkspacePoint[];
+  color: string;
+  width: number;
+  updatedAtMs: number;
+  updatedBy: string;
+}
+
+export interface WorkspaceStateResponse {
+  roomId: string;
+  updatedAtUtc: string;
+  nodes: WorkspaceNode[];
+  edges: WorkspaceEdge[];
+  assets: WorkspaceAsset[];
+  annotations: WorkspaceAnnotation[];
+  strokes: WorkspaceStroke[];
+  operationCount: number;
+}
+
+export interface WorkspaceOperationRequest {
+  peerId: string;
+  kind: string;
+  nodeId?: string;
+  fromNodeId?: string;
+  toNodeId?: string;
+  x?: number;
+  y?: number;
+  label?: string;
+  text?: string;
+  assetName?: string;
+  color?: string;
+  width?: number;
+  points?: WorkspacePoint[];
+  updatedAtMs?: number;
+}
+
+export interface WorkspaceEventItem {
+  updatedAtMs: number;
+  peerId: string;
+  kind: string;
+  message: string;
+}
+
+export interface WorkspaceEventsResponse {
+  roomId: string;
+  updatedAtUtc: string;
+  events: WorkspaceEventItem[];
+}

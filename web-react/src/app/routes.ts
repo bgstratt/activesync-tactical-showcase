@@ -76,9 +76,15 @@ export const appRoutes: AppRoute[] = [
   },
   {
     path: "/modes/infinite-workspace",
-    title: "Infinite Workspace",
+    title: "Infinite Workspace (Room-Backed)",
     group: "modes",
-    description: "Figma/Miro-style collaborative canvas with latency, offline, replay, and convergence."
+    description: "Shared host room by roomId across browsers with real collaboration, replay, and convergence."
+  },
+  {
+    path: "/modes/isolated-local-runtime",
+    title: "Isolated Local Runtime",
+    group: "modes",
+    description: "Single-browser simulation sandbox for latency/offline behavior without shared room sync."
   },
   {
     path: "/modes/dungeon-builder",

@@ -628,11 +628,11 @@ export function InfiniteWorkspacePage() {
   return (
     <section className="feature-page infinite-workspace-page">
       <header className="feature-header tactical-header">
-        <p className="hero-tag">KILLER DEMO</p>
-        <h1>Infinite Multiplayer Workspace</h1>
+        <p className="hero-tag">SIMULATION MODE</p>
+        <h1>Isolated Local Runtime</h1>
         <p>
-          Collaborative canvas with nodes, assets, systems, freehand drawing, annotations, branching, and replay. Simulate 2000ms latency and cloud
-          disconnect while keeping local edits instant.
+          Single-browser sandbox that simulates collaboration, latency, cloud disconnect, divergence, convergence, and replay without joining a shared
+          host room.
         </p>
         <p className="topology-note">
           Sequence: multi-peer edit burst, then set 2000ms latency, disconnect cloud, diverge edits, reconnect, and scrub replay timeline.
