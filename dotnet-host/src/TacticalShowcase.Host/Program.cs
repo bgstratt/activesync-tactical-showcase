@@ -240,8 +240,43 @@ app.MapGet("/api/workspace/rooms/{roomId}/signal", async (HttpContext context, s
             }
 
             var json = JsonDocument.Parse(new ReadOnlyMemory<byte>(buffer, 0, result.Count));
+            var messageType = json.RootElement.TryGetProperty("type", out var typeElement) && typeElement.ValueKind == JsonValueKind.String
+                ? typeElement.GetString()
+                : null;
+
             if (!json.RootElement.TryGetProperty("to", out var toElement) || toElement.ValueKind != JsonValueKind.String)
             {
+                if (string.Equals(messageType, "drag-presence", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(messageType, "drag-presence-end", StringComparison.OrdinalIgnoreCase))
+                {
+                    var nodeId = json.RootElement.TryGetProperty("nodeId", out var nodeIdElement) && nodeIdElement.ValueKind == JsonValueKind.String
+                        ? nodeIdElement.GetString()
+                        : null;
+                    var x = json.RootElement.TryGetProperty("x", out var xElement) && xElement.ValueKind == JsonValueKind.Number
+                        ? xElement.GetDouble()
+                        : (double?)null;
+                    var y = json.RootElement.TryGetProperty("y", out var yElement) && yElement.ValueKind == JsonValueKind.Number
+                        ? yElement.GetDouble()
+                        : (double?)null;
+                    var updatedAtMs = json.RootElement.TryGetProperty("updatedAtMs", out var updatedAtElement) && updatedAtElement.ValueKind == JsonValueKind.Number
+                        ? updatedAtElement.GetInt64()
+                        : (long?)null;
+
+                    if (!string.IsNullOrWhiteSpace(nodeId) && x is not null && y is not null)
+                    {
+                        await BroadcastToRoomAsync(roomPeers, new
+                        {
+                            type = messageType,
+                            from = peerId,
+                            peerId,
+                            nodeId,
+                            x,
+                            y,
+                            updatedAtMs
+                        }, excludePeerId: peerId, context.RequestAborted);
+                    }
+                }
+
                 continue;
             }
 
@@ -258,9 +293,7 @@ app.MapGet("/api/workspace/rooms/{roomId}/signal", async (HttpContext context, s
 
             using var envelope = JsonDocument.Parse(JsonSerializer.Serialize(new
             {
-                type = json.RootElement.TryGetProperty("type", out var typeElement) && typeElement.ValueKind == JsonValueKind.String
-                    ? typeElement.GetString()
-                    : "signal",
+                type = messageType ?? "signal",
                 from = peerId,
                 to = targetPeerId,
                 sdp = json.RootElement.TryGetProperty("sdp", out var sdpElement) && sdpElement.ValueKind == JsonValueKind.String

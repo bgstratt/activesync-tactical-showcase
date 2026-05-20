@@ -18,6 +18,7 @@ import type {
 
 type PeerId = "alpha" | "bravo" | "charlie";
 type WorkspaceTool = "select" | "draw" | "annotate";
+type TransportPreference = "auto" | "ws-only";
 type OfflineQueueByPeer = Record<PeerId, WorkspaceOperationItem[]>;
 type PendingOnlineQueueByPeer = Record<PeerId, WorkspaceOperationItem[]>;
 type PendingLocalMoveByNode = Record<string, { x: number; y: number; peerId: string; updatedAtMs: number }>;
@@ -38,6 +39,8 @@ const peerColor: Record<PeerId, string> = {
 
 const workspaceWidth = 2200;
 const workspaceHeight = 1400;
+const dragPresenceIntervalMs = 33;
+const dragAuthoritativeFallbackIntervalMs = 120;
 const offlineQueueStoragePrefix = "room-workspace:offline-queue:";
 const rtcConfig: RTCConfiguration = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
@@ -73,6 +76,14 @@ function parsePeerId(value: string | null): PeerId {
   }
 
   return "alpha";
+}
+
+function parseTransportPreference(value: string | null): TransportPreference {
+  if (value === "ws-only") {
+    return value;
+  }
+
+  return "auto";
 }
 
 function replayRoomState(operations: WorkspaceOperationItem[], count: number, roomId: string): WorkspaceStateResponse {
@@ -330,8 +341,13 @@ export function RoomWorkspacePage() {
   const [isReplayPlaying, setIsReplayPlaying] = useState(false);
   const [replaySpeedOpsPerSecond, setReplaySpeedOpsPerSecond] = useState(30);
   const [cloudConnected, setCloudConnected] = useState(true);
+  const [roomStreamReconnectNonce, setRoomStreamReconnectNonce] = useState(0);
+  const [transportPreference, setTransportPreference] = useState<TransportPreference>(() =>
+    parseTransportPreference(searchParams.get("transport"))
+  );
   const [transportMode, setTransportMode] = useState<"ws-only" | "ws+webrtc">("ws-only");
   const [signalSocketState, setSignalSocketState] = useState<"idle" | "connecting" | "open" | "closed" | "error">("idle");
+  const [signalReconnectNonce, setSignalReconnectNonce] = useState(0);
   const [knownSignalPeers, setKnownSignalPeers] = useState<string[]>([]);
   const [rtcDiagnostics, setRtcDiagnostics] = useState<Record<RtcDiagnosticsKey, number>>({
     offersSent: 0,
@@ -349,13 +365,19 @@ export function RoomWorkspacePage() {
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ nodeId: string; offsetX: number; offsetY: number } | null>(null);
   const dragPreviewRef = useRef<{ nodeId: string; x: number; y: number } | null>(null);
-  const lastDragBroadcastAtRef = useRef(0);
+  const lastDragPresenceSentAtRef = useRef(0);
+  const lastDragAuthoritativeSentAtRef = useRef(0);
   const drawRef = useRef<WorkspacePoint[] | null>(null);
   const pendingCreatedNodeIdsRef = useRef<Set<string>>(new Set());
   const deferredFinalMoveByNodeRef = useRef<Map<string, { x: number; y: number; updatedAtMs: number }>>(new Map());
   const signalSocketRef = useRef<WebSocket | null>(null);
   const rtcPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const rtcChannelsRef = useRef<Map<string, RTCDataChannel>>(new Map());
+  const transportPreferenceRef = useRef<TransportPreference>(transportPreference);
+
+  useEffect(() => {
+    transportPreferenceRef.current = transportPreference;
+  }, [transportPreference]);
 
   function bumpRtcDiagnostic(key: RtcDiagnosticsKey) {
     setRtcDiagnostics((previous) => ({
@@ -416,8 +438,93 @@ export function RoomWorkspacePage() {
     refreshRtcPeerStatuses();
   }
 
+  function handleRealtimePayload(
+    payload: {
+      type?: string;
+      nodeId?: string;
+      x?: number;
+      y?: number;
+      peerId?: string;
+      from?: string;
+      updatedAtMs?: number;
+      operation?: WorkspaceOperationItem;
+    },
+    fallbackPeerId?: string
+  ): boolean {
+    if (payload.type === "optimistic-op" && payload.operation) {
+      const operation = payload.operation;
+      if ((operation.kind === "add-node" || operation.kind === "add-annotation") && operation.peerId !== activePeerId) {
+        setRemoteOptimisticOperations((previous) => appendRemoteOptimisticUnique(previous, operation));
+      }
+      return true;
+    }
+
+    const resolvedPeerId = payload.peerId ?? payload.from ?? fallbackPeerId;
+
+    if (payload.type === "drag-presence" && payload.nodeId && typeof payload.x === "number" && typeof payload.y === "number") {
+      const dragX = payload.x;
+      const dragY = payload.y;
+      const dragNodeId = payload.nodeId;
+      const dragUpdatedAtMs = typeof payload.updatedAtMs === "number" ? payload.updatedAtMs : Date.now();
+      setRemoteDragByNode((previous) => {
+        const existing = previous[dragNodeId];
+        if (existing && existing.updatedAtMs > dragUpdatedAtMs) {
+          return previous;
+        }
+
+        return {
+          ...previous,
+          [dragNodeId]: {
+            x: dragX,
+            y: dragY,
+            peerId: resolvedPeerId ?? "unknown",
+            updatedAtMs: dragUpdatedAtMs,
+            holdUntilAck: false
+          }
+        };
+      });
+      return true;
+    }
+
+    if (
+      payload.type === "drag-presence-end" &&
+      payload.nodeId &&
+      typeof payload.x === "number" &&
+      typeof payload.y === "number"
+    ) {
+      const dragX = payload.x;
+      const dragY = payload.y;
+      const dragNodeId = payload.nodeId;
+      const dragUpdatedAtMs = typeof payload.updatedAtMs === "number" ? payload.updatedAtMs : Date.now();
+      setRemoteDragByNode((previous) => {
+        return {
+          ...previous,
+          [dragNodeId]: {
+            x: dragX,
+            y: dragY,
+            peerId: resolvedPeerId ?? "unknown",
+            updatedAtMs: dragUpdatedAtMs,
+            holdUntilAck: true
+          }
+        };
+      });
+      return true;
+    }
+
+    return false;
+  }
+
   function setupDataChannel(peerId: string, channel: RTCDataChannel) {
     channel.onopen = () => {
+      if (transportPreferenceRef.current === "ws-only") {
+        try {
+          channel.close();
+        } catch {
+          // ignore close race
+        }
+        return;
+      }
+
       rtcChannelsRef.current.set(peerId, channel);
       setTransportMode("ws+webrtc");
       refreshRtcPeerStatuses();
@@ -443,66 +550,11 @@ export function RoomWorkspacePage() {
           x?: number;
           y?: number;
           peerId?: string;
+          from?: string;
           updatedAtMs?: number;
           operation?: WorkspaceOperationItem;
         };
-
-        if (payload.type === "optimistic-op" && payload.operation) {
-          const operation = payload.operation;
-          if ((operation.kind === "add-node" || operation.kind === "add-annotation") && operation.peerId !== activePeerId) {
-            setRemoteOptimisticOperations((previous) => appendRemoteOptimisticUnique(previous, operation));
-          }
-          return;
-        }
-
-        if (payload.type === "drag-presence" && payload.nodeId && typeof payload.x === "number" && typeof payload.y === "number") {
-          const dragX = payload.x;
-          const dragY = payload.y;
-          const dragNodeId = payload.nodeId;
-          const dragUpdatedAtMs = typeof payload.updatedAtMs === "number" ? payload.updatedAtMs : Date.now();
-          setRemoteDragByNode((previous) => {
-            const existing = previous[dragNodeId];
-            if (existing && existing.updatedAtMs > dragUpdatedAtMs) {
-              return previous;
-            }
-
-            return {
-              ...previous,
-              [dragNodeId]: {
-                x: dragX,
-                y: dragY,
-                peerId: payload.peerId ?? peerId,
-                updatedAtMs: dragUpdatedAtMs,
-                holdUntilAck: false
-              }
-            };
-          });
-          return;
-        }
-
-        if (
-          payload.type === "drag-presence-end" &&
-          payload.nodeId &&
-          typeof payload.x === "number" &&
-          typeof payload.y === "number"
-        ) {
-          const dragX = payload.x;
-          const dragY = payload.y;
-          const dragNodeId = payload.nodeId;
-          const dragUpdatedAtMs = typeof payload.updatedAtMs === "number" ? payload.updatedAtMs : Date.now();
-          setRemoteDragByNode((previous) => {
-            return {
-              ...previous,
-              [dragNodeId]: {
-                x: dragX,
-                y: dragY,
-                peerId: payload.peerId ?? peerId,
-                updatedAtMs: dragUpdatedAtMs,
-                holdUntilAck: true
-              }
-            };
-          });
-        }
+        handleRealtimePayload(payload, peerId);
       } catch {
         // Ignore invalid peer payloads.
       }
@@ -510,6 +562,10 @@ export function RoomWorkspacePage() {
   }
 
   function ensureRtcPeer(remotePeerId: string, shouldOffer: boolean) {
+    if (transportPreferenceRef.current === "ws-only") {
+      return undefined;
+    }
+
     if (remotePeerId === activePeerId) {
       return rtcPeersRef.current.get(remotePeerId);
     }
@@ -572,9 +628,18 @@ export function RoomWorkspacePage() {
       const next = new URLSearchParams(previous);
       next.set("room", roomId);
       next.set("peer", activePeerId);
+      next.set("transport", transportPreference);
       return next;
     }, { replace: true });
-  }, [activePeerId, roomId, setSearchParams]);
+  }, [activePeerId, roomId, setSearchParams, transportPreference]);
+
+  useEffect(() => {
+    if (transportPreference !== "ws-only") {
+      return;
+    }
+
+    disconnectRtc();
+  }, [transportPreference]);
 
   useEffect(() => {
     try {
@@ -639,7 +704,7 @@ export function RoomWorkspacePage() {
     void refresh();
     const intervalId = window.setInterval(() => {
       void refresh();
-    }, 4000);
+    }, 1500);
 
     return () => {
       isCanceled = true;
@@ -652,6 +717,22 @@ export function RoomWorkspacePage() {
       return;
     }
 
+    let disposed = false;
+    let reconnectTimerId: number | null = null;
+
+    const scheduleReconnect = () => {
+      if (disposed || reconnectTimerId !== null || !cloudConnected) {
+        return;
+      }
+
+      reconnectTimerId = window.setTimeout(() => {
+        reconnectTimerId = null;
+        if (!disposed) {
+          setRoomStreamReconnectNonce((previous) => previous + 1);
+        }
+      }, 400);
+    };
+
     const disconnect = connectWorkspaceRoomOperationStream(roomId, {
       onOpen: () => {
         setHostError(null);
@@ -661,21 +742,48 @@ export function RoomWorkspacePage() {
       },
       onError: (message) => {
         setHostError(message);
+        scheduleReconnect();
+      },
+      onClose: () => {
+        if (!disposed) {
+          scheduleReconnect();
+        }
       }
     });
 
     return () => {
+      disposed = true;
+      if (reconnectTimerId !== null) {
+        window.clearTimeout(reconnectTimerId);
+        reconnectTimerId = null;
+      }
       disconnect();
     };
-  }, [cloudConnected, roomId]);
+  }, [cloudConnected, roomId, roomStreamReconnectNonce]);
 
   useEffect(() => {
     let disposed = false;
+    let reconnectTimerId: number | null = null;
+    const allowRtc = transportPreference === "auto";
+
+    const scheduleSignalReconnect = () => {
+      if (disposed || reconnectTimerId !== null || !cloudConnected) {
+        return;
+      }
+
+      reconnectTimerId = window.setTimeout(() => {
+        reconnectTimerId = null;
+        if (!disposed) {
+          setSignalReconnectNonce((previous) => previous + 1);
+        }
+      }, 450);
+    };
 
     if (!cloudConnected) {
       setSignalSocketState("idle");
       setKnownSignalPeers([]);
       disconnectRtc();
+      setSignalReconnectNonce(0);
       if (signalSocketRef.current) {
         signalSocketRef.current.close();
         signalSocketRef.current = null;
@@ -726,6 +834,10 @@ export function RoomWorkspacePage() {
 
         if (payload.type === "peers") {
           setKnownSignalPeers(payload.peers ?? []);
+          if (!allowRtc) {
+            return;
+          }
+
           for (const peerId of payload.peers ?? []) {
             if (peerId === activePeerId) {
               continue;
@@ -741,6 +853,10 @@ export function RoomWorkspacePage() {
           setKnownSignalPeers((previous) =>
             previous.includes(payload.peerId as string) ? previous : [...previous, payload.peerId as string]
           );
+          if (!allowRtc) {
+            return;
+          }
+
           const shouldOffer = activePeerId.localeCompare(payload.peerId) < 0;
           ensureRtcPeer(payload.peerId, shouldOffer);
           return;
@@ -771,7 +887,15 @@ export function RoomWorkspacePage() {
           return;
         }
 
+        if (handleRealtimePayload(payload, payload.from)) {
+          return;
+        }
+
         if (payload.type === "webrtc-offer" && payload.from && payload.sdp) {
+          if (!allowRtc) {
+            return;
+          }
+
           bumpRtcDiagnostic("offersReceived");
           const peer = ensureRtcPeer(payload.from, false);
           if (!peer) {
@@ -793,6 +917,10 @@ export function RoomWorkspacePage() {
         }
 
         if (payload.type === "webrtc-answer" && payload.from && payload.sdp) {
+          if (!allowRtc) {
+            return;
+          }
+
           bumpRtcDiagnostic("answersReceived");
           const peer = ensureRtcPeer(payload.from, false);
           if (!peer) {
@@ -804,6 +932,10 @@ export function RoomWorkspacePage() {
         }
 
         if (payload.type === "webrtc-ice" && payload.from && payload.candidate) {
+          if (!allowRtc) {
+            return;
+          }
+
           bumpRtcDiagnostic("iceReceived");
           const peer = ensureRtcPeer(payload.from, false);
           if (!peer) {
@@ -828,6 +960,7 @@ export function RoomWorkspacePage() {
 
       setSignalSocketState("error");
       setTransportMode("ws-only");
+      scheduleSignalReconnect();
     };
 
     socket.onclose = () => {
@@ -841,10 +974,15 @@ export function RoomWorkspacePage() {
         signalSocketRef.current = null;
       }
       disconnectRtc();
+      scheduleSignalReconnect();
     };
 
     return () => {
       disposed = true;
+      if (reconnectTimerId !== null) {
+        window.clearTimeout(reconnectTimerId);
+        reconnectTimerId = null;
+      }
 
       if (signalSocketRef.current === socket) {
         signalSocketRef.current = null;
@@ -872,7 +1010,7 @@ export function RoomWorkspacePage() {
       setSignalSocketState("idle");
       disconnectRtc();
     };
-  }, [activePeerId, cloudConnected, roomId]);
+  }, [activePeerId, cloudConnected, roomId, signalReconnectNonce, transportPreference]);
 
   useEffect(() => {
     const queued = flattenOfflineQueue(offlineQueueByPeer);
@@ -1170,10 +1308,35 @@ export function RoomWorkspacePage() {
 
         const now = Date.now();
         const hasRtcPresenceChannel = Array.from(rtcChannelsRef.current.values()).some((channel) => channel.readyState === "open");
+        const hasSignalSocket = signalSocketRef.current?.readyState === WebSocket.OPEN;
+        const hasRealtimeFanout = hasRtcPresenceChannel || (hasSignalSocket && knownSignalPeers.length > 0);
+        if (now - lastDragPresenceSentAtRef.current >= dragPresenceIntervalMs) {
+          lastDragPresenceSentAtRef.current = now;
+          const payload = {
+            type: "drag-presence",
+            peerId: activePeerId,
+            nodeId: dragRef.current.nodeId,
+            x: nextDrag.x,
+            y: nextDrag.y,
+            updatedAtMs: now
+          };
+          const serializedPayload = JSON.stringify(payload);
+          for (const channel of rtcChannelsRef.current.values()) {
+            if (channel.readyState === "open") {
+              channel.send(serializedPayload);
+            }
+          }
+
+          sendSignal(payload);
+        }
+
         const isPendingCreatedNode = pendingCreatedNodeIdsRef.current.has(nextDrag.nodeId);
-        const shouldSendAuthoritativeStep = !isPendingCreatedNode && (!hasRtcPresenceChannel || now - lastDragBroadcastAtRef.current >= 90);
-        if (shouldSendAuthoritativeStep) {
-          lastDragBroadcastAtRef.current = now;
+        if (
+          !hasRealtimeFanout &&
+          !isPendingCreatedNode &&
+          now - lastDragAuthoritativeSentAtRef.current >= dragAuthoritativeFallbackIntervalMs
+        ) {
+          lastDragAuthoritativeSentAtRef.current = now;
           void submitOperation(
             {
               peerId: activePeerId,
@@ -1185,20 +1348,6 @@ export function RoomWorkspacePage() {
             },
             false
           );
-        }
-
-        const payload = JSON.stringify({
-          type: "drag-presence",
-          peerId: activePeerId,
-          nodeId: dragRef.current.nodeId,
-          x: nextDrag.x,
-          y: nextDrag.y,
-          updatedAtMs: now
-        });
-        for (const channel of rtcChannelsRef.current.values()) {
-          if (channel.readyState === "open") {
-            channel.send(payload);
-          }
         }
 
         setDragPreview(nextDrag);
@@ -1218,7 +1367,8 @@ export function RoomWorkspacePage() {
       dragRef.current = null;
       setDragPreview(null);
       dragPreviewRef.current = null;
-      lastDragBroadcastAtRef.current = 0;
+      lastDragPresenceSentAtRef.current = 0;
+      lastDragAuthoritativeSentAtRef.current = 0;
 
       if (draggedNodeId && finalDrag && finalDrag.nodeId === draggedNodeId) {
         setPendingLocalMoveByNode((previous) => ({
@@ -1253,19 +1403,22 @@ export function RoomWorkspacePage() {
       }
 
       if (draggedNodeId) {
-        const payload = JSON.stringify({
+        const payload = {
           type: "drag-presence-end",
           peerId: activePeerId,
           nodeId: draggedNodeId,
           x: finalDrag?.x,
           y: finalDrag?.y,
           updatedAtMs: commitUpdatedAtMs
-        });
+        };
+        const serializedPayload = JSON.stringify(payload);
         for (const channel of rtcChannelsRef.current.values()) {
           if (channel.readyState === "open") {
-            channel.send(payload);
+            channel.send(serializedPayload);
           }
         }
+
+        sendSignal(payload);
       }
 
       const points = drawRef.current;
@@ -1305,7 +1458,7 @@ export function RoomWorkspacePage() {
       window.removeEventListener("mousemove", onPointerMove);
       window.removeEventListener("mouseup", onPointerUp);
     };
-  }, [activePeerId, cloudConnected, roomId]);
+  }, [activePeerId, cloudConnected, knownSignalPeers.length, roomId]);
 
   const renderedNodes = useMemo(() => {
     return displayState.nodes.map((node) => {
@@ -1575,6 +1728,18 @@ export function RoomWorkspacePage() {
           </label>
 
           <label>
+            Transport
+            <select
+              className="peer-select"
+              value={transportPreference}
+              onChange={(event) => setTransportPreference(event.target.value as TransportPreference)}
+            >
+              <option value="auto">auto (ws + rtc when available)</option>
+              <option value="ws-only">force ws-only (disable rtc)</option>
+            </select>
+          </label>
+
+          <label>
             Annotation
             <input
               className="peer-input"
@@ -1705,6 +1870,7 @@ export function RoomWorkspacePage() {
             <li>Room: {roomId}</li>
             <li>Operations: {state.operationCount}</li>
             <li>Cloud: {cloudConnected ? "connected" : "disconnected"}</li>
+            <li>Transport preference: {transportPreference}</li>
             <li>Transport: {transportMode}</li>
             <li>Offline queue (active peer): {activePeerOfflineOperations.length}</li>
             <li>Offline queue (total): {countOfflineQueue(offlineQueueByPeer)}</li>
