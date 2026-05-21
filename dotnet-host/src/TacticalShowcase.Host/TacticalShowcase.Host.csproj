@@ -3,5 +3,11 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <ActiveSyncPackageVersion Condition="'$(ActiveSyncPackageVersion)' == ''">0.1.0-local</ActiveSyncPackageVersion>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ActiveSync.DotNetHost.Native.win-x64" Version="$(ActiveSyncPackageVersion)" />
+    <PackageReference Include="ActiveSync.DotNetHost.Native.linux-x64" Version="$(ActiveSyncPackageVersion)" />
+  </ItemGroup>
 </Project>

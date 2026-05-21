@@ -1,4 +1,4 @@
-import type { ChangeEvent, MouseEvent as ReactMouseEvent } from "react";
+import type { ChangeEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
@@ -8,6 +8,7 @@ import {
   fetchWorkspaceRoomOperations,
   fetchWorkspaceRoomState
 } from "../app/hostClient";
+import { createDemoRoomSdkWithTransport } from "../app/activeSyncSdk";
 import type {
   WorkspaceEventItem,
   WorkspaceOperationItem,
@@ -30,6 +31,7 @@ type RtcPeerStatus = {
 };
 
 const peers: PeerId[] = ["alpha", "bravo", "charlie"];
+const enableRuntimeSdkSignaling = (import.meta.env.VITE_ENABLE_RUNTIME_SDK_SIGNALING as string | undefined) === "1";
 
 const peerColor: Record<PeerId, string> = {
   alpha: "#2563eb",
@@ -40,6 +42,9 @@ const peerColor: Record<PeerId, string> = {
 const workspaceWidth = 2200;
 const workspaceHeight = 1400;
 const dragPresenceIntervalMs = 33;
+const dragPresenceFallbackRelayIntervalMs = 90;
+const dragPresenceFallbackDedupWindowMs = 240;
+const optimisticRelayDedupWindowMs = 2000;
 const dragAuthoritativeFallbackIntervalMs = 120;
 const offlineQueueStoragePrefix = "room-workspace:offline-queue:";
 const rtcConfig: RTCConfiguration = {
@@ -185,6 +190,30 @@ function replayRoomState(operations: WorkspaceOperationItem[], count: number, ro
         });
       }
     }
+
+    if (op.kind === "delete-edge" && op.nodeId) {
+      edges.delete(op.nodeId);
+      continue;
+    }
+
+    if (op.kind === "delete-node" && op.nodeId) {
+      nodes.delete(op.nodeId);
+      for (const [edgeId, edge] of edges.entries()) {
+        if (edge.fromNodeId === op.nodeId || edge.toNodeId === op.nodeId) {
+          edges.delete(edgeId);
+        }
+      }
+      continue;
+    }
+
+    if (op.kind === "delete-annotation" && op.nodeId) {
+      annotations.delete(op.nodeId);
+      continue;
+    }
+
+    if (op.kind === "delete-stroke" && op.nodeId) {
+      strokes.delete(op.nodeId);
+    }
   }
 
   return {
@@ -310,6 +339,14 @@ function appendRemoteOptimisticUnique(
   return [...operations, nextOperation];
 }
 
+function isPrimaryInteractionPointer(event: ReactPointerEvent<Element>): boolean {
+  if (event.pointerType === "mouse") {
+    return event.button === 0;
+  }
+
+  return event.isPrimary;
+}
+
 export function RoomWorkspacePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [roomId, setRoomId] = useState(searchParams.get("room")?.trim() || generateRoomId());
@@ -323,6 +360,9 @@ export function RoomWorkspacePage() {
   const [offlineQueueByPeer, setOfflineQueueByPeer] = useState<OfflineQueueByPeer>(createEmptyOfflineQueue());
   const [pendingOnlineByPeer, setPendingOnlineByPeer] = useState<PendingOnlineQueueByPeer>(createEmptyPendingOnlineQueue());
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [selectedStrokeId, setSelectedStrokeId] = useState<string | null>(null);
   const [activeStrokePoints, setActiveStrokePoints] = useState<WorkspacePoint[]>([]);
   const [pendingStrokes, setPendingStrokes] = useState<{
     id: string;
@@ -365,12 +405,18 @@ export function RoomWorkspacePage() {
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ nodeId: string; offsetX: number; offsetY: number } | null>(null);
   const dragPreviewRef = useRef<{ nodeId: string; x: number; y: number } | null>(null);
+  const activePointerIdRef = useRef<number | null>(null);
   const lastDragPresenceSentAtRef = useRef(0);
   const lastDragAuthoritativeSentAtRef = useRef(0);
   const drawRef = useRef<WorkspacePoint[] | null>(null);
   const pendingCreatedNodeIdsRef = useRef<Set<string>>(new Set());
   const deferredFinalMoveByNodeRef = useRef<Map<string, { x: number; y: number; updatedAtMs: number }>>(new Map());
-  const signalSocketRef = useRef<WebSocket | null>(null);
+  const lastPresenceRelaySentAtByKeyRef = useRef<Record<string, number>>({});
+  const lastPresenceRelayFingerprintByKeyRef = useRef<Record<string, string>>({});
+  const runtimeSdkRef = useRef<any>(null);
+  const runtimePeerIdRef = useRef<string | null>(null);
+  const legacySignalSocketRef = useRef<WebSocket | null>(null);
+  const legacySignalPeerIdRef = useRef<string | null>(null);
   const rtcPeersRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const rtcChannelsRef = useRef<Map<string, RTCDataChannel>>(new Map());
   const transportPreferenceRef = useRef<TransportPreference>(transportPreference);
@@ -378,6 +424,11 @@ export function RoomWorkspacePage() {
   useEffect(() => {
     transportPreferenceRef.current = transportPreference;
   }, [transportPreference]);
+
+  useEffect(() => {
+    lastPresenceRelaySentAtByKeyRef.current = {};
+    lastPresenceRelayFingerprintByKeyRef.current = {};
+  }, [activePeerId, roomId]);
 
   function bumpRtcDiagnostic(key: RtcDiagnosticsKey) {
     setRtcDiagnostics((previous) => ({
@@ -408,12 +459,114 @@ export function RoomWorkspacePage() {
   }
 
   function sendSignal(payload: Record<string, unknown>) {
-    const socket = signalSocketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
+    const legacySocket = legacySignalSocketRef.current;
+    if (legacySocket && legacySocket.readyState === WebSocket.OPEN) {
+      legacySocket.send(JSON.stringify(payload));
       return;
     }
 
-    socket.send(JSON.stringify(payload));
+    const sdk = runtimeSdkRef.current as {
+      compat?: {
+        sendWebRtcOffer?: (to: string, sdp: string) => void;
+        sendWebRtcAnswer?: (to: string, sdp: string) => void;
+        sendWebRtcIce?: (to: string, candidate: string, sdpMid?: string, sdpMLineIndex?: number) => void;
+      };
+      signaling?: {
+        offer?: (to: string, sdp: string) => void;
+        answer?: (to: string, sdp: string) => void;
+        ice?: (to: string, candidate: string, sdpMid?: string, sdpMLineIndex?: number) => void;
+      };
+      presence?: {
+        set?: (data: unknown, options?: { sessionId?: string; ttlMs?: number; nowUnixMs?: number }) => void;
+      };
+    } | null;
+    if (!sdk) {
+      return;
+    }
+
+    const type = typeof payload.type === "string" ? payload.type : "";
+    if (type === "webrtc-offer" && typeof payload.to === "string" && typeof payload.sdp === "string") {
+      if (sdk.compat?.sendWebRtcOffer) {
+        sdk.compat.sendWebRtcOffer(payload.to, payload.sdp);
+      } else {
+        sdk.signaling?.offer?.(payload.to, payload.sdp);
+      }
+      return;
+    }
+
+    if (type === "webrtc-answer" && typeof payload.to === "string" && typeof payload.sdp === "string") {
+      if (sdk.compat?.sendWebRtcAnswer) {
+        sdk.compat.sendWebRtcAnswer(payload.to, payload.sdp);
+      } else {
+        sdk.signaling?.answer?.(payload.to, payload.sdp);
+      }
+      return;
+    }
+
+    if (type === "webrtc-ice" && typeof payload.to === "string" && typeof payload.candidate === "string") {
+      if (sdk.compat?.sendWebRtcIce) {
+        sdk.compat.sendWebRtcIce(
+          payload.to,
+          payload.candidate,
+          typeof payload.sdpMid === "string" ? payload.sdpMid : undefined,
+          typeof payload.sdpMLineIndex === "number" ? payload.sdpMLineIndex : undefined
+        );
+      } else {
+        sdk.signaling?.ice?.(
+          payload.to,
+          payload.candidate,
+          typeof payload.sdpMid === "string" ? payload.sdpMid : undefined,
+          typeof payload.sdpMLineIndex === "number" ? payload.sdpMLineIndex : undefined
+        );
+      }
+      return;
+    }
+
+    if (!sdk.presence?.set) {
+      return;
+    }
+
+    const now = Date.now();
+    const payloadType = typeof payload.type === "string" ? payload.type : "";
+    if (payloadType === "drag-presence") {
+      const nodeId = typeof payload.nodeId === "string" ? payload.nodeId : "unknown";
+      const x = typeof payload.x === "number" ? payload.x : 0;
+      const y = typeof payload.y === "number" ? payload.y : 0;
+      const relayKey = `${payloadType}:${nodeId}`;
+      const fingerprint = `${payloadType}:${nodeId}:${Math.round(x / 8)}:${Math.round(y / 8)}`;
+      const lastSentAt = lastPresenceRelaySentAtByKeyRef.current[relayKey] ?? 0;
+      const lastFingerprint = lastPresenceRelayFingerprintByKeyRef.current[relayKey] ?? "";
+
+      if (now - lastSentAt < dragPresenceFallbackRelayIntervalMs) {
+        return;
+      }
+
+      if (lastFingerprint === fingerprint && now - lastSentAt < dragPresenceFallbackDedupWindowMs) {
+        return;
+      }
+
+      lastPresenceRelaySentAtByKeyRef.current[relayKey] = now;
+      lastPresenceRelayFingerprintByKeyRef.current[relayKey] = fingerprint;
+    }
+
+    if (payloadType === "optimistic-op") {
+      const operation = payload.operation as { id?: string } | undefined;
+      const opId = typeof operation?.id === "string" ? operation.id : "";
+      if (opId) {
+        const relayKey = `${payloadType}:${opId}`;
+        const lastSentAt = lastPresenceRelaySentAtByKeyRef.current[relayKey] ?? 0;
+        if (now - lastSentAt < optimisticRelayDedupWindowMs) {
+          return;
+        }
+        lastPresenceRelaySentAtByKeyRef.current[relayKey] = now;
+      }
+    }
+
+    sdk.presence.set(payload, {
+      sessionId: activePeerId,
+      ttlMs: 4000,
+      nowUnixMs: now
+    });
   }
 
   function disconnectRtc() {
@@ -468,7 +621,7 @@ export function RoomWorkspacePage() {
       const dragUpdatedAtMs = typeof payload.updatedAtMs === "number" ? payload.updatedAtMs : Date.now();
       setRemoteDragByNode((previous) => {
         const existing = previous[dragNodeId];
-        if (existing && existing.updatedAtMs > dragUpdatedAtMs) {
+        if (existing && existing.updatedAtMs >= dragUpdatedAtMs) {
           return previous;
         }
 
@@ -784,28 +937,42 @@ export function RoomWorkspacePage() {
       setKnownSignalPeers([]);
       disconnectRtc();
       setSignalReconnectNonce(0);
-      if (signalSocketRef.current) {
-        signalSocketRef.current.close();
-        signalSocketRef.current = null;
+      if (legacySignalSocketRef.current) {
+        try {
+          legacySignalSocketRef.current.close();
+        } catch {
+          // ignore close race
+        }
+        legacySignalSocketRef.current = null;
+      }
+      runtimePeerIdRef.current = null;
+      const sdk = runtimeSdkRef.current;
+      runtimeSdkRef.current = null;
+      if (sdk) {
+        void sdk.room.disconnect();
       }
       return;
     }
 
     setSignalSocketState("connecting");
     setKnownSignalPeers([]);
+    const cleanupHandlers: Array<() => void> = [];
 
-    const baseUrl = (import.meta.env.VITE_HOST_BASE_URL as string | undefined) ?? "http://localhost:5074";
-    const signalUrl =
-      baseUrl.replace(/^http:\/\//i, "ws://").replace(/^https:\/\//i, "wss://") +
-      `/api/workspace/rooms/${encodeURIComponent(roomId)}/signal?peerId=${encodeURIComponent(activePeerId)}`;
+    const baseUrl = (import.meta.env.VITE_HOST_BASE_URL as string | undefined) ??
+      `${window.location.protocol}//${window.location.hostname}:5074`;
+    const legacySignalPeerId = `${activePeerId}-${makeId("signal")}`;
+    legacySignalPeerIdRef.current = legacySignalPeerId;
+    const legacySignalUrl = baseUrl
+      .replace(/^http:\/\//i, "ws://")
+      .replace(/^https:\/\//i, "wss://") +
+      `/api/workspace/rooms/${encodeURIComponent(roomId)}/signal?peerId=${encodeURIComponent(legacySignalPeerId)}`;
+    const legacySocket = new WebSocket(legacySignalUrl);
+    legacySignalSocketRef.current = legacySocket;
 
-    const socket = new WebSocket(signalUrl);
-    signalSocketRef.current = socket;
-
-    socket.onopen = () => {
+    legacySocket.onopen = () => {
       if (disposed) {
         try {
-          socket.close();
+          legacySocket.close();
         } catch {
           // ignore close race
         }
@@ -815,7 +982,7 @@ export function RoomWorkspacePage() {
       setSignalSocketState("open");
     };
 
-    socket.onmessage = (event) => {
+    legacySocket.onmessage = (event) => {
       if (disposed) {
         return;
       }
@@ -830,65 +997,43 @@ export function RoomWorkspacePage() {
           candidate?: string;
           sdpMid?: string | null;
           sdpMLineIndex?: number | null;
+          nodeId?: string;
+          x?: number;
+          y?: number;
+          updatedAtMs?: number;
+          operation?: WorkspaceOperationItem;
         };
 
         if (payload.type === "peers") {
-          setKnownSignalPeers(payload.peers ?? []);
-          if (!allowRtc) {
-            return;
-          }
+          const peers = payload.peers ?? [];
+          setKnownSignalPeers(peers);
 
-          for (const peerId of payload.peers ?? []) {
-            if (peerId === activePeerId) {
-              continue;
+          if (allowRtc) {
+            const localPeerId = legacySignalPeerIdRef.current;
+            for (const peerId of peers) {
+              if (!peerId || peerId === localPeerId) {
+                continue;
+              }
+
+              const shouldOffer = localPeerId !== null && localPeerId.localeCompare(peerId) < 0;
+              ensureRtcPeer(peerId, shouldOffer);
             }
-
-            const shouldOffer = activePeerId.localeCompare(peerId) < 0;
-            ensureRtcPeer(peerId, shouldOffer);
           }
           return;
         }
 
-        if (payload.type === "peer-joined" && payload.peerId && payload.peerId !== activePeerId) {
-          setKnownSignalPeers((previous) =>
-            previous.includes(payload.peerId as string) ? previous : [...previous, payload.peerId as string]
-          );
-          if (!allowRtc) {
-            return;
-          }
+        if (payload.type === "peer-joined" && payload.peerId && payload.peerId !== legacySignalPeerIdRef.current) {
+          setKnownSignalPeers((previous) => (previous.includes(payload.peerId as string) ? previous : [...previous, payload.peerId as string]));
 
-          const shouldOffer = activePeerId.localeCompare(payload.peerId) < 0;
-          ensureRtcPeer(payload.peerId, shouldOffer);
-          return;
+          if (allowRtc) {
+            const localPeerId = legacySignalPeerIdRef.current;
+            const shouldOffer = localPeerId !== null && localPeerId.localeCompare(payload.peerId) < 0;
+            ensureRtcPeer(payload.peerId, shouldOffer);
+          }
         }
 
         if (payload.type === "peer-left" && payload.peerId) {
           setKnownSignalPeers((previous) => previous.filter((peerId) => peerId !== payload.peerId));
-          const peer = rtcPeersRef.current.get(payload.peerId);
-          if (peer) {
-            try {
-              peer.close();
-            } catch {
-              // ignore
-            }
-            rtcPeersRef.current.delete(payload.peerId);
-            refreshRtcPeerStatuses();
-          }
-
-          rtcChannelsRef.current.delete(payload.peerId);
-          if (rtcChannelsRef.current.size === 0) {
-            setTransportMode("ws-only");
-          }
-
-          setRemoteDragByNode((previous) => {
-            const next = Object.fromEntries(Object.entries(previous).filter(([, value]) => value.peerId !== payload.peerId));
-            return next;
-          });
-          return;
-        }
-
-        if (handleRealtimePayload(payload, payload.from)) {
-          return;
         }
 
         if (payload.type === "webrtc-offer" && payload.from && payload.sdp) {
@@ -947,35 +1092,302 @@ export function RoomWorkspacePage() {
             sdpMid: payload.sdpMid ?? undefined,
             sdpMLineIndex: payload.sdpMLineIndex ?? undefined
           });
+          return;
         }
+
+        handleRealtimePayload(payload, payload.from ?? payload.peerId);
       } catch {
-        // Ignore invalid signaling payload.
+        // Ignore invalid legacy signaling payload.
       }
     };
 
-    socket.onerror = () => {
+    legacySocket.onerror = () => {
       if (disposed) {
         return;
       }
 
-      setSignalSocketState("error");
-      setTransportMode("ws-only");
-      scheduleSignalReconnect();
+      // Legacy WebSocket error can be transient during reconnect; onclose will
+      // drive authoritative state transitions.
+      if (legacySignalSocketRef.current?.readyState !== WebSocket.OPEN) {
+        setSignalSocketState("connecting");
+      }
     };
 
-    socket.onclose = () => {
+    legacySocket.onclose = () => {
       if (disposed) {
         return;
       }
 
+      if (legacySignalSocketRef.current === legacySocket) {
+        legacySignalSocketRef.current = null;
+      }
       setSignalSocketState("closed");
-      setTransportMode("ws-only");
-      if (signalSocketRef.current === socket) {
-        signalSocketRef.current = null;
-      }
-      disconnectRtc();
       scheduleSignalReconnect();
     };
+
+    if (enableRuntimeSdkSignaling) {
+      void (async () => {
+      try {
+        const sdk = await createDemoRoomSdkWithTransport(roomId, transportPreference);
+        if (disposed) {
+          await sdk.room.disconnect();
+          return;
+        }
+
+        runtimeSdkRef.current = sdk;
+        const topology = sdk.topology.snapshot();
+        runtimePeerIdRef.current = topology.pubkey;
+        setTransportMode("ws-only");
+
+        const sdkAny = sdk as any;
+
+        cleanupHandlers.push(
+          sdkAny.on("connected", () => {
+            if (disposed) {
+              return;
+            }
+            setSignalSocketState("open");
+            setHostError(null);
+          })
+        );
+
+        cleanupHandlers.push(
+          sdkAny.on("disconnected", () => {
+            if (disposed) {
+              return;
+            }
+            setSignalSocketState("closed");
+            setTransportMode("ws-only");
+            disconnectRtc();
+            scheduleSignalReconnect();
+          })
+        );
+
+        cleanupHandlers.push(
+          sdkAny.on("transport", (payload: unknown) => {
+            if (disposed || !payload || typeof payload !== "object") {
+              return;
+            }
+
+            const active = (payload as { active?: unknown }).active;
+            if (active === "ws+webrtc" || active === "ws-only") {
+              setTransportMode(active);
+            }
+          })
+        );
+
+        cleanupHandlers.push(
+          sdkAny.on("runtime-message", (payload: unknown) => {
+            if (disposed || !payload || typeof payload !== "object") {
+              return;
+            }
+
+            const runtimeMessage = payload as {
+              type?: string;
+              peers?: string[];
+              peerId?: string;
+            };
+
+            if (runtimeMessage.type === "welcome") {
+              const localPeerId = runtimePeerIdRef.current;
+              const peers = Array.isArray(runtimeMessage.peers) ? runtimeMessage.peers : [];
+              setKnownSignalPeers(peers.filter((peerId) => peerId !== localPeerId));
+              return;
+            }
+
+            if (runtimeMessage.type === "peer-joined" && runtimeMessage.peerId) {
+              const localPeerId = runtimePeerIdRef.current;
+              if (runtimeMessage.peerId === localPeerId) {
+                return;
+              }
+              setKnownSignalPeers((previous) =>
+                previous.includes(runtimeMessage.peerId as string) ? previous : [...previous, runtimeMessage.peerId as string]
+              );
+              return;
+            }
+
+            if (runtimeMessage.type === "peer-left" && runtimeMessage.peerId) {
+              setKnownSignalPeers((previous) => previous.filter((peerId) => peerId !== runtimeMessage.peerId));
+            }
+          })
+        );
+
+        cleanupHandlers.push(
+          sdkAny.on("presence", (payload: unknown) => {
+            if (disposed || !payload || typeof payload !== "object") {
+              return;
+            }
+
+            const presence = payload as {
+              type?: string;
+              from?: string;
+              data?: unknown;
+            };
+
+            if (presence.type !== "presence" || !presence.data || typeof presence.data !== "object") {
+              return;
+            }
+
+            if (presence.from && presence.from === runtimePeerIdRef.current) {
+              return;
+            }
+
+            handleRealtimePayload(
+              presence.data as {
+                type?: string;
+                nodeId?: string;
+                x?: number;
+                y?: number;
+                peerId?: string;
+                from?: string;
+                updatedAtMs?: number;
+                operation?: WorkspaceOperationItem;
+              },
+              presence.from
+            );
+          })
+        );
+
+        cleanupHandlers.push(
+          sdkAny.on("signal", (payload: unknown) => {
+            if (legacySignalSocketRef.current && legacySignalSocketRef.current.readyState === WebSocket.OPEN) {
+              return;
+            }
+
+            if (disposed || !payload || typeof payload !== "object") {
+              return;
+            }
+
+            const signal = payload as {
+              type?: string;
+              peerId?: string;
+              from?: string;
+              sdp?: string;
+              candidate?: string;
+              sdpMid?: string | null;
+              sdpMLineIndex?: number | null;
+            };
+
+            const localPeerId = runtimePeerIdRef.current;
+            const remotePeerId =
+              typeof signal.from === "string"
+                ? signal.from
+                : typeof signal.peerId === "string"
+                  ? signal.peerId
+                  : undefined;
+
+            if (signal.type === "peer-joined" && remotePeerId && remotePeerId !== localPeerId) {
+              setKnownSignalPeers((previous) => (previous.includes(remotePeerId) ? previous : [...previous, remotePeerId]));
+              if (!allowRtc) {
+                return;
+              }
+
+              const shouldOffer = localPeerId !== null && localPeerId.localeCompare(remotePeerId) < 0;
+              ensureRtcPeer(remotePeerId, shouldOffer);
+              return;
+            }
+
+            if (signal.type === "peer-left" && remotePeerId) {
+              setKnownSignalPeers((previous) => previous.filter((peerId) => peerId !== remotePeerId));
+              const peer = rtcPeersRef.current.get(remotePeerId);
+              if (peer) {
+                try {
+                  peer.close();
+                } catch {
+                  // ignore
+                }
+                rtcPeersRef.current.delete(remotePeerId);
+                refreshRtcPeerStatuses();
+              }
+
+              rtcChannelsRef.current.delete(remotePeerId);
+              if (rtcChannelsRef.current.size === 0) {
+                setTransportMode("ws-only");
+              }
+
+              setRemoteDragByNode((previous) => {
+                const next = Object.fromEntries(Object.entries(previous).filter(([, value]) => value.peerId !== remotePeerId));
+                return next;
+              });
+              return;
+            }
+
+            if (signal.type === "webrtc-offer" && remotePeerId && signal.sdp) {
+              if (!allowRtc) {
+                return;
+              }
+
+              bumpRtcDiagnostic("offersReceived");
+              const peer = ensureRtcPeer(remotePeerId, false);
+              if (!peer) {
+                return;
+              }
+
+              void (async () => {
+                await peer.setRemoteDescription({ type: "offer", sdp: signal.sdp });
+                const answer = await peer.createAnswer();
+                await peer.setLocalDescription(answer);
+                bumpRtcDiagnostic("answersSent");
+                sendSignal({
+                  type: "webrtc-answer",
+                  to: remotePeerId,
+                  sdp: answer.sdp
+                });
+              })();
+              return;
+            }
+
+            if (signal.type === "webrtc-answer" && remotePeerId && signal.sdp) {
+              if (!allowRtc) {
+                return;
+              }
+
+              bumpRtcDiagnostic("answersReceived");
+              const peer = ensureRtcPeer(remotePeerId, false);
+              if (!peer) {
+                return;
+              }
+
+              void peer.setRemoteDescription({ type: "answer", sdp: signal.sdp });
+              return;
+            }
+
+            if (signal.type === "webrtc-ice" && remotePeerId && signal.candidate) {
+              if (!allowRtc) {
+                return;
+              }
+
+              bumpRtcDiagnostic("iceReceived");
+              const peer = ensureRtcPeer(remotePeerId, false);
+              if (!peer) {
+                return;
+              }
+
+              void peer.addIceCandidate({
+                candidate: signal.candidate,
+                sdpMid: signal.sdpMid ?? undefined,
+                sdpMLineIndex: signal.sdpMLineIndex ?? undefined
+              });
+            }
+          })
+        );
+      } catch {
+        if (disposed) {
+          return;
+        }
+
+        // Tactical host may not expose /ws/runtime; if legacy signal relay is
+        // open, keep signal state open and continue with ws-only fallback.
+        if (legacySignalSocketRef.current?.readyState === WebSocket.OPEN) {
+          setSignalSocketState("open");
+        } else {
+          setSignalSocketState("error");
+        }
+        setTransportMode("ws-only");
+        scheduleSignalReconnect();
+      }
+      })();
+    }
 
     return () => {
       disposed = true;
@@ -984,27 +1396,39 @@ export function RoomWorkspacePage() {
         reconnectTimerId = null;
       }
 
-      if (signalSocketRef.current === socket) {
-        signalSocketRef.current = null;
+      for (const cleanup of cleanupHandlers) {
+        cleanup();
       }
 
-      if (socket.readyState === WebSocket.OPEN) {
+      const sdk = runtimeSdkRef.current;
+      runtimeSdkRef.current = null;
+      runtimePeerIdRef.current = null;
+      legacySignalPeerIdRef.current = null;
+      if (sdk) {
+        void sdk.room.disconnect();
+      }
+
+      if (legacySignalSocketRef.current === legacySocket) {
+        legacySignalSocketRef.current = null;
+      }
+
+      if (legacySocket.readyState === WebSocket.OPEN) {
         try {
-          socket.close();
+          legacySocket.close();
         } catch {
           // ignore close race
         }
-      } else if (socket.readyState === WebSocket.CONNECTING) {
+      } else if (legacySocket.readyState === WebSocket.CONNECTING) {
         const closeWhenOpen = () => {
-          socket.removeEventListener("open", closeWhenOpen);
+          legacySocket.removeEventListener("open", closeWhenOpen);
           try {
-            socket.close();
+            legacySocket.close();
           } catch {
             // ignore close race
           }
         };
 
-        socket.addEventListener("open", closeWhenOpen);
+        legacySocket.addEventListener("open", closeWhenOpen);
       }
 
       setSignalSocketState("idle");
@@ -1213,6 +1637,13 @@ export function RoomWorkspacePage() {
     });
   }, [operations]);
 
+  function clearSelection() {
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setSelectedAnnotationId(null);
+    setSelectedStrokeId(null);
+  }
+
   const activePeerOfflineOperations = useMemo(() => offlineQueueByPeer[activePeerId], [activePeerId, offlineQueueByPeer]);
   const activePeerPendingOnlineOperations = useMemo(() => pendingOnlineByPeer[activePeerId], [activePeerId, pendingOnlineByPeer]);
   const mergedOperations = useMemo(
@@ -1287,10 +1718,18 @@ export function RoomWorkspacePage() {
   }, [isReplayPlaying, followLiveReplay, mergedOperations.length, replaySpeedOpsPerSecond]);
 
   useEffect(() => {
-    function onPointerMove(event: MouseEvent) {
+    function onPointerMove(event: PointerEvent) {
+      if (activePointerIdRef.current !== null && event.pointerId !== activePointerIdRef.current) {
+        return;
+      }
+
       const workspace = workspaceRef.current;
       if (!workspace) {
         return;
+      }
+
+      if (event.cancelable && (dragRef.current || drawRef.current)) {
+        event.preventDefault();
       }
 
       const rect = workspace.getBoundingClientRect();
@@ -1308,8 +1747,10 @@ export function RoomWorkspacePage() {
 
         const now = Date.now();
         const hasRtcPresenceChannel = Array.from(rtcChannelsRef.current.values()).some((channel) => channel.readyState === "open");
-        const hasSignalSocket = signalSocketRef.current?.readyState === WebSocket.OPEN;
-        const hasRealtimeFanout = hasRtcPresenceChannel || (hasSignalSocket && knownSignalPeers.length > 0);
+        const hasSignalRelay =
+          legacySignalSocketRef.current?.readyState === WebSocket.OPEN || signalSocketState === "open";
+        const hasRealtimeFanout = hasRtcPresenceChannel || (hasSignalRelay && knownSignalPeers.length > 0);
+        const forceAuthoritativeInWsOnly = transportMode === "ws-only";
         if (now - lastDragPresenceSentAtRef.current >= dragPresenceIntervalMs) {
           lastDragPresenceSentAtRef.current = now;
           const payload = {
@@ -1327,12 +1768,14 @@ export function RoomWorkspacePage() {
             }
           }
 
-          sendSignal(payload);
+          if (!hasRtcPresenceChannel) {
+            sendSignal(payload);
+          }
         }
 
         const isPendingCreatedNode = pendingCreatedNodeIdsRef.current.has(nextDrag.nodeId);
         if (
-          !hasRealtimeFanout &&
+          (!hasRealtimeFanout || forceAuthoritativeInWsOnly) &&
           !isPendingCreatedNode &&
           now - lastDragAuthoritativeSentAtRef.current >= dragAuthoritativeFallbackIntervalMs
         ) {
@@ -1360,11 +1803,16 @@ export function RoomWorkspacePage() {
       }
     }
 
-    function onPointerUp() {
+    function onPointerUp(event: PointerEvent) {
+      if (activePointerIdRef.current !== null && event.pointerId !== activePointerIdRef.current) {
+        return;
+      }
+
       const draggedNodeId = dragRef.current?.nodeId;
       const finalDrag = dragPreviewRef.current;
       const commitUpdatedAtMs = Date.now();
       dragRef.current = null;
+      activePointerIdRef.current = null;
       setDragPreview(null);
       dragPreviewRef.current = null;
       lastDragPresenceSentAtRef.current = 0;
@@ -1418,7 +1866,10 @@ export function RoomWorkspacePage() {
           }
         }
 
-        sendSignal(payload);
+        const hasRtcPresenceChannel = Array.from(rtcChannelsRef.current.values()).some((channel) => channel.readyState === "open");
+        if (!hasRtcPresenceChannel) {
+          sendSignal(payload);
+        }
       }
 
       const points = drawRef.current;
@@ -1451,14 +1902,16 @@ export function RoomWorkspacePage() {
       setActiveStrokePoints([]);
     }
 
-    window.addEventListener("mousemove", onPointerMove);
-    window.addEventListener("mouseup", onPointerUp);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
 
     return () => {
-      window.removeEventListener("mousemove", onPointerMove);
-      window.removeEventListener("mouseup", onPointerUp);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
     };
-  }, [activePeerId, cloudConnected, knownSignalPeers.length, roomId]);
+  }, [activePeerId, cloudConnected, knownSignalPeers.length, roomId, signalSocketState]);
 
   const renderedNodes = useMemo(() => {
     return displayState.nodes.map((node) => {
@@ -1527,6 +1980,16 @@ export function RoomWorkspacePage() {
           channel.send(payload);
         }
       }
+
+      const hasRtcPresenceChannel = Array.from(rtcChannelsRef.current.values()).some((channel) => channel.readyState === "open");
+      if (!hasRtcPresenceChannel) {
+        sendSignal({
+          type: "optimistic-op",
+          operation: nextOptimisticItem,
+          peerId: activePeerId,
+          updatedAtMs: nextOptimisticItem.updatedAtMs
+        });
+      }
     }
 
     if (!cloudConnected) {
@@ -1545,6 +2008,10 @@ export function RoomWorkspacePage() {
     try {
       const nextState = await applyWorkspaceRoomOperation(roomId, normalized);
       setState(nextState);
+      if (normalized.kind === "move-node") {
+        const confirmedMove = toOperationItem(normalized);
+        setOperations((previous) => appendOperationUnique(previous, confirmedMove));
+      }
       if (announce) {
         setStatusMessage(`Applied ${operation.kind}`);
       }
@@ -1574,7 +2041,11 @@ export function RoomWorkspacePage() {
     }
   }
 
-  function handleWorkspaceMouseDown(event: ReactMouseEvent<HTMLDivElement>) {
+  function handleWorkspacePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!isPrimaryInteractionPointer(event)) {
+      return;
+    }
+
     const workspace = workspaceRef.current;
     if (!workspace) {
       return;
@@ -1584,7 +2055,12 @@ export function RoomWorkspacePage() {
     const x = Math.max(0, Math.min(workspaceWidth, event.clientX - rect.left));
     const y = Math.max(0, Math.min(workspaceHeight, event.clientY - rect.top));
 
+    if (tool === "select") {
+      clearSelection();
+    }
+
     if (tool === "annotate") {
+      event.preventDefault();
       void submitOperation({
         peerId: activePeerId,
         kind: "add-annotation",
@@ -1598,13 +2074,15 @@ export function RoomWorkspacePage() {
     }
 
     if (tool === "draw") {
+      event.preventDefault();
+      activePointerIdRef.current = event.pointerId;
       const initial = [{ x, y }];
       drawRef.current = initial;
       setActiveStrokePoints(initial);
     }
   }
 
-  function handleNodeMouseDown(event: ReactMouseEvent<HTMLDivElement>, nodeId: string) {
+  function handleNodePointerDown(event: ReactPointerEvent<HTMLDivElement>, nodeId: string) {
     event.stopPropagation();
 
     const node = nodeById.get(nodeId);
@@ -1613,6 +2091,10 @@ export function RoomWorkspacePage() {
     }
 
     if (tool !== "select") {
+      return;
+    }
+
+    if (!isPrimaryInteractionPointer(event)) {
       return;
     }
 
@@ -1628,13 +2110,140 @@ export function RoomWorkspacePage() {
       return;
     }
 
+    event.preventDefault();
+    activePointerIdRef.current = event.pointerId;
+    const nodeRect = event.currentTarget.getBoundingClientRect();
     setSelectedNodeId(nodeId);
+    setSelectedEdgeId(null);
+    setSelectedAnnotationId(null);
+    setSelectedStrokeId(null);
     dragRef.current = {
       nodeId,
-      offsetX: event.nativeEvent.offsetX,
-      offsetY: event.nativeEvent.offsetY
+      offsetX: event.clientX - nodeRect.left,
+      offsetY: event.clientY - nodeRect.top
     };
   }
+
+  function handleAnnotationPointerDown(event: ReactPointerEvent<HTMLDivElement>, annotationId: string) {
+    event.stopPropagation();
+    if (tool !== "select" || !isPrimaryInteractionPointer(event)) {
+      return;
+    }
+
+    setSelectedAnnotationId(annotationId);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setSelectedStrokeId(null);
+  }
+
+  function handleStrokePointerDown(event: ReactPointerEvent<SVGPolylineElement>, strokeId: string) {
+    event.stopPropagation();
+    if (tool !== "select" || !isPrimaryInteractionPointer(event)) {
+      return;
+    }
+
+    setSelectedStrokeId(strokeId);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setSelectedAnnotationId(null);
+  }
+
+  function handleEdgePointerDown(event: ReactPointerEvent<SVGLineElement>, edgeId: string) {
+    event.stopPropagation();
+    if (tool !== "select" || !isPrimaryInteractionPointer(event)) {
+      return;
+    }
+
+    setSelectedEdgeId(edgeId);
+    setSelectedNodeId(null);
+    setSelectedAnnotationId(null);
+    setSelectedStrokeId(null);
+  }
+
+  async function deleteSelection() {
+    const updatedAtMs = Date.now();
+
+    if (selectedNodeId) {
+      const nodeId = selectedNodeId;
+      clearSelection();
+      await submitOperation({
+        peerId: activePeerId,
+        kind: "delete-node",
+        nodeId,
+        updatedAtMs
+      });
+      setStatusMessage(`Deleted node ${nodeId}`);
+      return;
+    }
+
+    if (selectedAnnotationId) {
+      const annotationId = selectedAnnotationId;
+      clearSelection();
+      await submitOperation({
+        peerId: activePeerId,
+        kind: "delete-annotation",
+        nodeId: annotationId,
+        updatedAtMs
+      });
+      setStatusMessage(`Deleted annotation ${annotationId}`);
+      return;
+    }
+
+    if (selectedEdgeId) {
+      const edgeId = selectedEdgeId;
+      clearSelection();
+      await submitOperation({
+        peerId: activePeerId,
+        kind: "delete-edge",
+        nodeId: edgeId,
+        updatedAtMs
+      });
+      setStatusMessage(`Deleted edge ${edgeId}`);
+      return;
+    }
+
+    if (selectedStrokeId) {
+      const strokeId = selectedStrokeId;
+      clearSelection();
+      await submitOperation({
+        peerId: activePeerId,
+        kind: "delete-stroke",
+        nodeId: strokeId,
+        updatedAtMs
+      });
+      setStatusMessage(`Deleted stroke ${strokeId}`);
+    }
+  }
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Delete" && event.key !== "Backspace") {
+        return;
+      }
+
+      const active = document.activeElement;
+      if (
+        active instanceof HTMLInputElement ||
+        active instanceof HTMLTextAreaElement ||
+        active instanceof HTMLSelectElement ||
+        (active instanceof HTMLElement && active.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (!selectedNodeId && !selectedEdgeId && !selectedAnnotationId && !selectedStrokeId) {
+        return;
+      }
+
+      event.preventDefault();
+      void deleteSelection();
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [selectedNodeId, selectedEdgeId, selectedAnnotationId, selectedStrokeId, activePeerId, roomId]);
 
   function handleAssetUpload(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
@@ -1755,6 +2364,14 @@ export function RoomWorkspacePage() {
           <button type="button" className="action-btn tactical-btn" onClick={() => void addNode()} disabled={isBusy}>
             Add Node
           </button>
+          <button
+            type="button"
+            className="action-btn tactical-btn"
+            onClick={() => void deleteSelection()}
+            disabled={!selectedNodeId && !selectedEdgeId && !selectedAnnotationId && !selectedStrokeId}
+          >
+            Delete Selected
+          </button>
           <label className="action-btn tactical-btn upload-btn">
             Upload Asset
             <input type="file" onChange={handleAssetUpload} multiple />
@@ -1777,7 +2394,12 @@ export function RoomWorkspacePage() {
       <div className="infinite-layout">
         <article className="feature-panel">
           <div className="workspace-scroll">
-            <div className="workspace-surface" ref={workspaceRef} onMouseDown={handleWorkspaceMouseDown} role="presentation">
+            <div
+              className={`workspace-surface ${tool === "draw" ? "workspace-surface-draw" : "workspace-surface-navigate"}`}
+              ref={workspaceRef}
+              onPointerDown={handleWorkspacePointerDown}
+              role="presentation"
+            >
               <svg className="workspace-edges" width={workspaceWidth} height={workspaceHeight}>
                 {displayState.edges.map((edge) => {
                   const from = nodeById.get(edge.fromNodeId);
@@ -1789,6 +2411,7 @@ export function RoomWorkspacePage() {
                   return (
                     <line
                       key={edge.id}
+                      className={selectedEdgeId === edge.id ? "workspace-edge selected" : "workspace-edge"}
                       x1={from.x + 68}
                       y1={from.y + 22}
                       x2={to.x + 68}
@@ -1796,6 +2419,7 @@ export function RoomWorkspacePage() {
                       stroke="#2d3a50"
                       strokeOpacity={0.6}
                       strokeWidth={2.5}
+                      onPointerDown={(event) => handleEdgePointerDown(event, edge.id)}
                     />
                   );
                 })}
@@ -1803,11 +2427,13 @@ export function RoomWorkspacePage() {
                 {displayState.strokes.map((stroke) => (
                   <polyline
                     key={stroke.id}
+                    className={selectedStrokeId === stroke.id ? "workspace-stroke selected" : "workspace-stroke"}
                     fill="none"
                     stroke={stroke.color}
                     strokeOpacity={0.75}
                     strokeWidth={stroke.width}
                     points={stroke.points.map((point) => `${point.x},${point.y}`).join(" ")}
+                    onPointerDown={(event) => handleStrokePointerDown(event, stroke.id)}
                   />
                 ))}
 
@@ -1841,7 +2467,12 @@ export function RoomWorkspacePage() {
               ))}
 
               {displayState.annotations.map((annotation) => (
-                <div key={annotation.id} className="workspace-note" style={{ left: annotation.x, top: annotation.y }}>
+                <div
+                  key={annotation.id}
+                  className={selectedAnnotationId === annotation.id ? "workspace-note selected" : "workspace-note"}
+                  style={{ left: annotation.x, top: annotation.y }}
+                  onPointerDown={(event) => handleAnnotationPointerDown(event, annotation.id)}
+                >
                   <strong>{annotation.text}</strong>
                   <small>{annotation.updatedBy}</small>
                 </div>
@@ -1851,7 +2482,7 @@ export function RoomWorkspacePage() {
                 <div
                   key={node.id}
                   className={selectedNodeId === node.id ? "workspace-node selected" : "workspace-node"}
-                  onMouseDown={(event) => handleNodeMouseDown(event, node.id)}
+                  onPointerDown={(event) => handleNodePointerDown(event, node.id)}
                   style={{ left: node.x, top: node.y, borderColor: node.color }}
                   role="button"
                   tabIndex={0}

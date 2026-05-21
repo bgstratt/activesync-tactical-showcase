@@ -987,10 +987,28 @@ body {
   position: relative;
 }
 
+.workspace-surface-navigate {
+  touch-action: pan-x pan-y;
+}
+
+.workspace-surface-draw {
+  touch-action: none;
+}
+
 .workspace-edges {
   position: absolute;
   inset: 0;
   pointer-events: none;
+}
+
+.workspace-edge {
+  cursor: pointer;
+  pointer-events: stroke;
+}
+
+.workspace-edge.selected {
+  stroke-opacity: 0.95;
+  stroke-width: 4;
 }
 
 .workspace-node {
@@ -1004,6 +1022,8 @@ body {
   box-shadow: 0 6px 14px rgba(12, 16, 21, 0.13);
   display: grid;
   gap: 0.12rem;
+  user-select: none;
+  touch-action: none;
 }
 
 .workspace-node:active {
@@ -1032,6 +1052,11 @@ body {
   padding: 0.35rem 0.45rem;
   display: grid;
   gap: 0.1rem;
+  cursor: pointer;
+}
+
+.workspace-note.selected {
+  box-shadow: 0 0 0 2px rgba(180, 122, 18, 0.35), 0 10px 20px rgba(12, 16, 21, 0.16);
 }
 
 .workspace-note small {
@@ -1053,6 +1078,15 @@ body {
 .workspace-asset small {
   color: #36507a;
   font-size: 0.72rem;
+}
+
+.workspace-stroke {
+  cursor: pointer;
+  pointer-events: stroke;
+}
+
+.workspace-stroke.selected {
+  stroke-opacity: 1;
 }
 
 @media (max-width: 1120px) {

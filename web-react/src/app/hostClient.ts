@@ -17,10 +17,14 @@ import type {
   TacticalBoardState
 } from "../../../shared/contracts/runtime";
 
-const defaultBaseUrl = "http://localhost:5074";
+function getDefaultBaseUrl(): string {
+  const hostname = typeof window !== "undefined" ? window.location.hostname : "localhost";
+  const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "https" : "http";
+  return `${protocol}://${hostname}:5074`;
+}
 
 function getBaseUrl(): string {
-  return import.meta.env.VITE_HOST_BASE_URL ?? defaultBaseUrl;
+  return import.meta.env.VITE_HOST_BASE_URL ?? getDefaultBaseUrl();
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {

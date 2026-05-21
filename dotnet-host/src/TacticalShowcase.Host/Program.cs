@@ -6,7 +6,8 @@ using System.Net.WebSockets;
 using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.WebHost.UseUrls("http://localhost:5074");
+var hostUrls = Environment.GetEnvironmentVariable("TACTICAL_HOST_URLS");
+builder.WebHost.UseUrls(string.IsNullOrWhiteSpace(hostUrls) ? "http://0.0.0.0:5074" : hostUrls);
 
 builder.Services.AddSingleton<INativeRuntimeProbe, NativeRuntimeProbe>();
 builder.Services.AddSingleton<IRuntimeReplicationService, RuntimeReplicationService>();
@@ -17,11 +18,21 @@ builder.Services.AddCors(options =>
     options.AddPolicy("WebReactDev", policy =>
     {
         policy
-            .WithOrigins(
-                "http://127.0.0.1:4173",
-                "http://localhost:4173",
-                "http://127.0.0.1:5173",
-                "http://localhost:5173")
+            .SetIsOriginAllowed(origin =>
+            {
+                if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri))
+                {
+                    return false;
+                }
+
+                if (!string.Equals(uri.Scheme, "http", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                return uri.Port is 4173 or 5173;
+            })
             .AllowAnyHeader()
             .AllowAnyMethod();
     });

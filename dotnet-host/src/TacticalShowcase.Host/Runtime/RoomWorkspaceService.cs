@@ -75,6 +75,9 @@ internal sealed class RoomWorkspaceService : IRoomWorkspaceService
                 case "add-edge":
                     ApplyAddEdge(room, request, peerId, nowMs);
                     break;
+                case "delete-edge":
+                    ApplyDeleteEdge(room, request, peerId, nowMs);
+                    break;
                 case "add-asset":
                     ApplyAddAsset(room, request, peerId, nowMs);
                     break;
@@ -83,6 +86,15 @@ internal sealed class RoomWorkspaceService : IRoomWorkspaceService
                     break;
                 case "add-stroke":
                     ApplyAddStroke(room, request, peerId, nowMs);
+                    break;
+                case "delete-node":
+                    ApplyDeleteNode(room, request, peerId, nowMs);
+                    break;
+                case "delete-annotation":
+                    ApplyDeleteAnnotation(room, request, peerId, nowMs);
+                    break;
+                case "delete-stroke":
+                    ApplyDeleteStroke(room, request, peerId, nowMs);
                     break;
                 default:
                     throw new InvalidOperationException($"Unsupported workspace operation '{request.Kind}'");
@@ -220,6 +232,24 @@ internal sealed class RoomWorkspaceService : IRoomWorkspaceService
         room.Events.Add(new WorkspaceEventItem(updatedAtMs, peerId, "add-edge", $"Connected {edge.FromNodeId} -> {edge.ToNodeId}"));
     }
 
+    private static void ApplyDeleteEdge(RoomState room, WorkspaceOperationRequest request, string peerId, long updatedAtMs)
+    {
+        if (string.IsNullOrWhiteSpace(request.NodeId))
+        {
+            return;
+        }
+
+        var edgeId = request.NodeId.Trim();
+        var removed = room.Edges.Remove(edgeId);
+        if (!removed)
+        {
+            return;
+        }
+
+        room.OperationCount += 1;
+        room.Events.Add(new WorkspaceEventItem(updatedAtMs, peerId, "delete-edge", $"Deleted edge {edgeId}"));
+    }
+
     private static void ApplyAddAsset(RoomState room, WorkspaceOperationRequest request, string peerId, long updatedAtMs)
     {
         var id = string.IsNullOrWhiteSpace(request.NodeId) ? $"asset-{Guid.NewGuid():N}" : request.NodeId.Trim();
@@ -258,6 +288,70 @@ internal sealed class RoomWorkspaceService : IRoomWorkspaceService
         UpsertByTimestamp(room.Strokes, stroke, updatedAtMs, static value => value.UpdatedAtMs);
         room.OperationCount += 1;
         room.Events.Add(new WorkspaceEventItem(updatedAtMs, peerId, "add-stroke", $"Stroke with {stroke.Points.Count} points"));
+    }
+
+    private static void ApplyDeleteNode(RoomState room, WorkspaceOperationRequest request, string peerId, long updatedAtMs)
+    {
+        if (string.IsNullOrWhiteSpace(request.NodeId))
+        {
+            return;
+        }
+
+        var nodeId = request.NodeId.Trim();
+        var removedNode = room.Nodes.Remove(nodeId);
+        var removedEdgeIds = room.Edges
+            .Where(entry => entry.Value.FromNodeId == nodeId || entry.Value.ToNodeId == nodeId)
+            .Select(entry => entry.Key)
+            .ToArray();
+
+        foreach (var edgeId in removedEdgeIds)
+        {
+            room.Edges.Remove(edgeId);
+        }
+
+        if (!removedNode && removedEdgeIds.Length == 0)
+        {
+            return;
+        }
+
+        room.OperationCount += 1;
+        room.Events.Add(new WorkspaceEventItem(updatedAtMs, peerId, "delete-node", $"Deleted {nodeId}"));
+    }
+
+    private static void ApplyDeleteAnnotation(RoomState room, WorkspaceOperationRequest request, string peerId, long updatedAtMs)
+    {
+        if (string.IsNullOrWhiteSpace(request.NodeId))
+        {
+            return;
+        }
+
+        var annotationId = request.NodeId.Trim();
+        var removed = room.Annotations.Remove(annotationId);
+        if (!removed)
+        {
+            return;
+        }
+
+        room.OperationCount += 1;
+        room.Events.Add(new WorkspaceEventItem(updatedAtMs, peerId, "delete-annotation", $"Deleted annotation {annotationId}"));
+    }
+
+    private static void ApplyDeleteStroke(RoomState room, WorkspaceOperationRequest request, string peerId, long updatedAtMs)
+    {
+        if (string.IsNullOrWhiteSpace(request.NodeId))
+        {
+            return;
+        }
+
+        var strokeId = request.NodeId.Trim();
+        var removed = room.Strokes.Remove(strokeId);
+        if (!removed)
+        {
+            return;
+        }
+
+        room.OperationCount += 1;
+        room.Events.Add(new WorkspaceEventItem(updatedAtMs, peerId, "delete-stroke", $"Deleted stroke {strokeId}"));
     }
 
     private static void UpsertByTimestamp<T>(Dictionary<string, T> map, T value, long timestamp, Func<T, long> getTimestamp)
