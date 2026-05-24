@@ -73,15 +73,18 @@ internal static class NativeLibraryResolver
         yield return Path.Combine(cwd, "..", "..", "target", "debug", fileName);
         yield return Path.Combine(cwd, "..", "..", "target", "release", fileName);
 
-        // Sibling workspace fallback when showcase host and activesync repo are side by side.
-        yield return Path.Combine(cwd, "..", "activesync", "target", "debug", fileName);
-        yield return Path.Combine(cwd, "..", "activesync", "target", "release", fileName);
-        yield return Path.Combine(cwd, "..", "..", "activesync", "target", "debug", fileName);
-        yield return Path.Combine(cwd, "..", "..", "activesync", "target", "release", fileName);
-        yield return Path.Combine(cwd, "..", "..", "..", "activesync", "target", "debug", fileName);
-        yield return Path.Combine(cwd, "..", "..", "..", "activesync", "target", "release", fileName);
-        yield return Path.Combine(cwd, "..", "..", "..", "..", "activesync", "target", "debug", fileName);
-        yield return Path.Combine(cwd, "..", "..", "..", "..", "activesync", "target", "release", fileName);
+        // Sibling workspace fallback when showcase host and activeSync repo are side by side.
+        foreach (var siblingRepoName in new[] { "activeSync", "activesync" })
+        {
+            yield return Path.Combine(cwd, "..", siblingRepoName, "target", "debug", fileName);
+            yield return Path.Combine(cwd, "..", siblingRepoName, "target", "release", fileName);
+            yield return Path.Combine(cwd, "..", "..", siblingRepoName, "target", "debug", fileName);
+            yield return Path.Combine(cwd, "..", "..", siblingRepoName, "target", "release", fileName);
+            yield return Path.Combine(cwd, "..", "..", "..", siblingRepoName, "target", "debug", fileName);
+            yield return Path.Combine(cwd, "..", "..", "..", siblingRepoName, "target", "release", fileName);
+            yield return Path.Combine(cwd, "..", "..", "..", "..", siblingRepoName, "target", "debug", fileName);
+            yield return Path.Combine(cwd, "..", "..", "..", "..", siblingRepoName, "target", "release", fileName);
+        }
     }
 
     private static string GetPlatformLibraryFileName()

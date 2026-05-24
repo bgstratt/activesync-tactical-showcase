@@ -22,18 +22,18 @@ The host probes native library `activesync_host_ffi` via:
 2. common local candidate paths under `target/debug` and `target/release`.
 3. platform default native search.
 
-When this repo sits beside the main `activesync` repo, the resolver also checks sibling paths such as `../activesync/target/debug` and `../activesync/target/release`.
+When this repo sits beside the main `activeSync` repo, the resolver also checks sibling paths such as `../activeSync/target/debug` and `../activeSync/target/release`.
 
 If native runtime is not found, `/api/host/health` remains available and reports `available=false` with an error string.
 
 ### Local NuGet Package Mode (Recommended)
 
-Use local ActiveSync NuGet artifacts from the sibling `activesync` repo.
+Use local ActiveSync NuGet artifacts from the sibling `activeSync` repo.
 
-1. Build local packages in `activesync` first:
+1. Build local packages in `activeSync` first:
 
 ```powershell
-cd ..\activesync\dotnet-host
+cd ..\activeSync\dotnet-host
 pwsh -File .\pack-local-nuget.ps1 -Version 0.1.0-local
 ```
 
@@ -62,7 +62,7 @@ The project references RID-specific native runtime packages (`win-x64`, `linux-x
 ### Reuse Runtime From Sibling activesync Repo
 
 ```powershell
-cd ..\activesync
+cd ..\activeSync
 cargo build -p activesync-host-ffi
 ```
 
