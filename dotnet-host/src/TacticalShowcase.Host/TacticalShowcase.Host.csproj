@@ -7,6 +7,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="ActiveSync.Host.Abstractions" Version="$(ActiveSyncPackageVersion)" />
+    <PackageReference Include="ActiveSync.Host.Composition" Version="$(ActiveSyncPackageVersion)" />
     <PackageReference Include="ActiveSync.DotNetHost.Native.win-x64" Version="$(ActiveSyncPackageVersion)" />
     <PackageReference Include="ActiveSync.DotNetHost.Native.linux-x64" Version="$(ActiveSyncPackageVersion)" />
   </ItemGroup>

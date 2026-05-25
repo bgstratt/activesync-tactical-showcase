@@ -48,6 +48,12 @@ This repository focuses on a polished, multi-page demonstration experience rathe
 
 Host health is exposed at `http://localhost:5074/api/host/health`. If the native runtime cannot load, the endpoint stays reachable and reports the reason.
 
+## Integration Model
+
+- Tactical host is package-first: it consumes local ActiveSync NuGet host packages and adds showcase-specific endpoints on top.
+- Tactical web is SDK-first: runtime room signaling defaults to `activesync-sdk-js` over `/ws/runtime` and only uses the legacy room signal relay as fallback.
+- To force legacy-only signaling for troubleshooting, set `VITE_DISABLE_RUNTIME_SDK_SIGNALING=1`.
+
 ## Detailed Plan
 
 See `PLAN.md` and `docs/ARCHITECTURE.md`.

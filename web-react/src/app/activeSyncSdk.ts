@@ -1,4 +1,21 @@
-import { createActiveSyncSdk, type ActiveSyncSdk } from "activesync-sdk-js";
+import {
+  createActiveSyncSdk,
+  type ActiveSyncSdk,
+  type ActiveSyncSdkOptions,
+  type TopologySnapshot
+} from "activesync-sdk-js";
+import bridgeWasmUrl from "activesync-bridge/activesync_bridge_bg.wasm?url";
+
+export type DemoTransportPreference = "auto" | "ws-only";
+
+type DemoSdkOptions = {
+  transportMode?: DemoTransportPreference;
+  offlinePersistenceKey?: string;
+};
+
+type BridgeWasmInitInput = {
+  module_or_path: string;
+};
 
 function getDefaultHostWsBase(): string {
   const hostname = typeof window !== "undefined" ? window.location.hostname : "localhost";
@@ -16,21 +33,41 @@ function getHostWsBase(): string {
 }
 
 export async function createDemoRoomSdk(roomId: string): Promise<ActiveSyncSdk> {
-  return createActiveSyncSdk({
-    wsUrl: `${getHostWsBase()}/ws/runtime`,
-    roomId
-  });
+  return createDemoRoomSdkWithOptions(roomId);
 }
 
 export async function createDemoRoomSdkWithTransport(
   roomId: string,
-  mode: "auto" | "ws-only"
+  mode: DemoTransportPreference
 ): Promise<ActiveSyncSdk> {
-  return (createActiveSyncSdk as unknown as (options: unknown) => Promise<ActiveSyncSdk>)({
+  return createDemoRoomSdkWithOptions(roomId, {
+    transportMode: mode
+  });
+}
+
+export function readActiveTransportMode(sdk: ActiveSyncSdk): TopologySnapshot["activeTransport"] {
+  return sdk.topology.snapshot().activeTransport;
+}
+
+async function createDemoRoomSdkWithOptions(roomId: string, options: DemoSdkOptions = {}): Promise<ActiveSyncSdk> {
+  const wasmInitInput: BridgeWasmInitInput = {
+    module_or_path: bridgeWasmUrl
+  };
+
+  const sdkOptions: ActiveSyncSdkOptions = {
     wsUrl: `${getHostWsBase()}/ws/runtime`,
     roomId,
+    wasmModule: wasmInitInput as unknown as ActiveSyncSdkOptions["wasmModule"],
     transport: {
-      mode
+      mode: options.transportMode ?? "auto"
     }
-  });
+  };
+
+  if (options.offlinePersistenceKey) {
+    sdkOptions.offline = {
+      persistenceKey: options.offlinePersistenceKey
+    };
+  }
+
+  return createActiveSyncSdk(sdkOptions);
 }

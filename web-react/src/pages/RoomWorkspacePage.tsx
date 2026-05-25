@@ -1,6 +1,7 @@
 import type { ChangeEvent, PointerEvent as ReactPointerEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import type { ActiveSyncSdk } from "activesync-sdk-js";
 import {
   applyWorkspaceRoomOperation,
   connectWorkspaceRoomOperationStream,
@@ -8,7 +9,7 @@ import {
   fetchWorkspaceRoomOperations,
   fetchWorkspaceRoomState
 } from "../app/hostClient";
-import { createDemoRoomSdkWithTransport } from "../app/activeSyncSdk";
+import { createDemoRoomSdkWithTransport, readActiveTransportMode } from "../app/activeSyncSdk";
 import type {
   WorkspaceEventItem,
   WorkspaceOperationItem,
@@ -31,7 +32,7 @@ type RtcPeerStatus = {
 };
 
 const peers: PeerId[] = ["alpha", "bravo", "charlie"];
-const enableRuntimeSdkSignaling = (import.meta.env.VITE_ENABLE_RUNTIME_SDK_SIGNALING as string | undefined) === "1";
+const disableRuntimeSdkSignaling = (import.meta.env.VITE_DISABLE_RUNTIME_SDK_SIGNALING as string | undefined) === "1";
 
 const peerColor: Record<PeerId, string> = {
   alpha: "#2563eb",
@@ -382,6 +383,7 @@ export function RoomWorkspacePage() {
   const [replaySpeedOpsPerSecond, setReplaySpeedOpsPerSecond] = useState(30);
   const [cloudConnected, setCloudConnected] = useState(true);
   const [roomStreamReconnectNonce, setRoomStreamReconnectNonce] = useState(0);
+  const [isRoomStreamHealthy, setIsRoomStreamHealthy] = useState(false);
   const [transportPreference, setTransportPreference] = useState<TransportPreference>(() =>
     parseTransportPreference(searchParams.get("transport"))
   );
@@ -413,7 +415,7 @@ export function RoomWorkspacePage() {
   const deferredFinalMoveByNodeRef = useRef<Map<string, { x: number; y: number; updatedAtMs: number }>>(new Map());
   const lastPresenceRelaySentAtByKeyRef = useRef<Record<string, number>>({});
   const lastPresenceRelayFingerprintByKeyRef = useRef<Record<string, string>>({});
-  const runtimeSdkRef = useRef<any>(null);
+  const runtimeSdkRef = useRef<ActiveSyncSdk | null>(null);
   const runtimePeerIdRef = useRef<string | null>(null);
   const legacySignalSocketRef = useRef<WebSocket | null>(null);
   const legacySignalPeerIdRef = useRef<string | null>(null);
@@ -459,70 +461,37 @@ export function RoomWorkspacePage() {
   }
 
   function sendSignal(payload: Record<string, unknown>) {
-    const legacySocket = legacySignalSocketRef.current;
-    if (legacySocket && legacySocket.readyState === WebSocket.OPEN) {
-      legacySocket.send(JSON.stringify(payload));
-      return;
-    }
-
-    const sdk = runtimeSdkRef.current as {
-      compat?: {
-        sendWebRtcOffer?: (to: string, sdp: string) => void;
-        sendWebRtcAnswer?: (to: string, sdp: string) => void;
-        sendWebRtcIce?: (to: string, candidate: string, sdpMid?: string, sdpMLineIndex?: number) => void;
-      };
-      signaling?: {
-        offer?: (to: string, sdp: string) => void;
-        answer?: (to: string, sdp: string) => void;
-        ice?: (to: string, candidate: string, sdpMid?: string, sdpMLineIndex?: number) => void;
-      };
-      presence?: {
-        set?: (data: unknown, options?: { sessionId?: string; ttlMs?: number; nowUnixMs?: number }) => void;
-      };
-    } | null;
-    if (!sdk) {
-      return;
-    }
-
-    const type = typeof payload.type === "string" ? payload.type : "";
-    if (type === "webrtc-offer" && typeof payload.to === "string" && typeof payload.sdp === "string") {
-      if (sdk.compat?.sendWebRtcOffer) {
+    const sdk = runtimeSdkRef.current;
+    if (sdk) {
+      const type = typeof payload.type === "string" ? payload.type : "";
+      if (type === "webrtc-offer" && typeof payload.to === "string" && typeof payload.sdp === "string") {
         sdk.compat.sendWebRtcOffer(payload.to, payload.sdp);
-      } else {
-        sdk.signaling?.offer?.(payload.to, payload.sdp);
+        return;
       }
-      return;
-    }
 
-    if (type === "webrtc-answer" && typeof payload.to === "string" && typeof payload.sdp === "string") {
-      if (sdk.compat?.sendWebRtcAnswer) {
+      if (type === "webrtc-answer" && typeof payload.to === "string" && typeof payload.sdp === "string") {
         sdk.compat.sendWebRtcAnswer(payload.to, payload.sdp);
-      } else {
-        sdk.signaling?.answer?.(payload.to, payload.sdp);
+        return;
       }
-      return;
-    }
 
-    if (type === "webrtc-ice" && typeof payload.to === "string" && typeof payload.candidate === "string") {
-      if (sdk.compat?.sendWebRtcIce) {
+      if (type === "webrtc-ice" && typeof payload.to === "string" && typeof payload.candidate === "string") {
         sdk.compat.sendWebRtcIce(
           payload.to,
           payload.candidate,
           typeof payload.sdpMid === "string" ? payload.sdpMid : undefined,
           typeof payload.sdpMLineIndex === "number" ? payload.sdpMLineIndex : undefined
         );
-      } else {
-        sdk.signaling?.ice?.(
-          payload.to,
-          payload.candidate,
-          typeof payload.sdpMid === "string" ? payload.sdpMid : undefined,
-          typeof payload.sdpMLineIndex === "number" ? payload.sdpMLineIndex : undefined
-        );
+        return;
       }
+    }
+
+    const legacySocket = legacySignalSocketRef.current;
+    if (legacySocket && legacySocket.readyState === WebSocket.OPEN) {
+      legacySocket.send(JSON.stringify(payload));
       return;
     }
 
-    if (!sdk.presence?.set) {
+    if (!sdk) {
       return;
     }
 
@@ -828,6 +797,7 @@ export function RoomWorkspacePage() {
     let isCanceled = false;
 
     if (!cloudConnected) {
+      setIsRoomStreamHealthy(false);
       return () => {
         isCanceled = true;
       };
@@ -855,15 +825,22 @@ export function RoomWorkspacePage() {
     }
 
     void refresh();
-    const intervalId = window.setInterval(() => {
-      void refresh();
-    }, 1500);
+
+    // Primary synchronization path is websocket streaming; poll only as fallback.
+    let intervalId: number | null = null;
+    if (!isRoomStreamHealthy) {
+      intervalId = window.setInterval(() => {
+        void refresh();
+      }, 5000);
+    }
 
     return () => {
       isCanceled = true;
-      window.clearInterval(intervalId);
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+      }
     };
-  }, [cloudConnected, roomId]);
+  }, [cloudConnected, roomId, isRoomStreamHealthy]);
 
   useEffect(() => {
     if (!cloudConnected) {
@@ -888,16 +865,19 @@ export function RoomWorkspacePage() {
 
     const disconnect = connectWorkspaceRoomOperationStream(roomId, {
       onOpen: () => {
+        setIsRoomStreamHealthy(true);
         setHostError(null);
       },
       onOperation: (operation) => {
         setOperations((previous) => appendOperationUnique(previous, operation));
       },
       onError: (message) => {
+        setIsRoomStreamHealthy(false);
         setHostError(message);
         scheduleReconnect();
       },
       onClose: () => {
+        setIsRoomStreamHealthy(false);
         if (!disposed) {
           scheduleReconnect();
         }
@@ -917,6 +897,7 @@ export function RoomWorkspacePage() {
   useEffect(() => {
     let disposed = false;
     let reconnectTimerId: number | null = null;
+    let suppressLegacyReconnect = false;
     const allowRtc = transportPreference === "auto";
 
     const scheduleSignalReconnect = () => {
@@ -1118,6 +1099,11 @@ export function RoomWorkspacePage() {
         return;
       }
 
+      if (suppressLegacyReconnect || runtimeSdkRef.current !== null) {
+        // SDK signaling took ownership; ignore legacy close transitions.
+        return;
+      }
+
       if (legacySignalSocketRef.current === legacySocket) {
         legacySignalSocketRef.current = null;
       }
@@ -1125,24 +1111,34 @@ export function RoomWorkspacePage() {
       scheduleSignalReconnect();
     };
 
-    if (enableRuntimeSdkSignaling) {
+    if (!disableRuntimeSdkSignaling) {
       void (async () => {
       try {
         const sdk = await createDemoRoomSdkWithTransport(roomId, transportPreference);
+        await sdk.room.connect();
         if (disposed) {
-          await sdk.room.disconnect();
+          sdk.room.disconnect();
           return;
         }
 
         runtimeSdkRef.current = sdk;
         const topology = sdk.topology.snapshot();
         runtimePeerIdRef.current = topology.pubkey;
-        setTransportMode("ws-only");
+        setTransportMode(readActiveTransportMode(sdk));
 
-        const sdkAny = sdk as any;
+        if (legacySignalSocketRef.current) {
+          suppressLegacyReconnect = true;
+          try {
+            legacySignalSocketRef.current.close();
+          } catch {
+            // Best-effort handoff to SDK signaling.
+          }
+          legacySignalSocketRef.current = null;
+          legacySignalPeerIdRef.current = null;
+        }
 
         cleanupHandlers.push(
-          sdkAny.on("connected", () => {
+          sdk.on("connected", () => {
             if (disposed) {
               return;
             }
@@ -1152,7 +1148,7 @@ export function RoomWorkspacePage() {
         );
 
         cleanupHandlers.push(
-          sdkAny.on("disconnected", () => {
+          sdk.on("disconnected", () => {
             if (disposed) {
               return;
             }
@@ -1164,20 +1160,25 @@ export function RoomWorkspacePage() {
         );
 
         cleanupHandlers.push(
-          sdkAny.on("transport", (payload: unknown) => {
+          sdk.on("transport", (payload: unknown) => {
             if (disposed || !payload || typeof payload !== "object") {
               return;
             }
 
             const active = (payload as { active?: unknown }).active;
-            if (active === "ws+webrtc" || active === "ws-only") {
+            if (active === "ws-only") {
+              setTransportMode(active);
+              return;
+            }
+
+            if (active === "ws+webrtc" && rtcChannelsRef.current.size > 0) {
               setTransportMode(active);
             }
           })
         );
 
         cleanupHandlers.push(
-          sdkAny.on("runtime-message", (payload: unknown) => {
+          sdk.on("runtime-message", (payload: unknown) => {
             if (disposed || !payload || typeof payload !== "object") {
               return;
             }
@@ -1213,7 +1214,7 @@ export function RoomWorkspacePage() {
         );
 
         cleanupHandlers.push(
-          sdkAny.on("presence", (payload: unknown) => {
+          sdk.on("presence", (payload: unknown) => {
             if (disposed || !payload || typeof payload !== "object") {
               return;
             }
@@ -1249,10 +1250,7 @@ export function RoomWorkspacePage() {
         );
 
         cleanupHandlers.push(
-          sdkAny.on("signal", (payload: unknown) => {
-            if (legacySignalSocketRef.current && legacySignalSocketRef.current.readyState === WebSocket.OPEN) {
-              return;
-            }
+          sdk.on("signal", (payload: unknown) => {
 
             if (disposed || !payload || typeof payload !== "object") {
               return;
@@ -1376,8 +1374,7 @@ export function RoomWorkspacePage() {
           return;
         }
 
-        // Tactical host may not expose /ws/runtime; if legacy signal relay is
-        // open, keep signal state open and continue with ws-only fallback.
+        // SDK signaling can fail due transient host restarts; keep legacy relay fallback active.
         if (legacySignalSocketRef.current?.readyState === WebSocket.OPEN) {
           setSignalSocketState("open");
         } else {

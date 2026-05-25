@@ -1,8 +1,10 @@
+using ActiveSync.Host.Composition;
 using TacticalShowcase.Host.Contracts;
 using TacticalShowcase.Host.Ffi;
 using TacticalShowcase.Host.Runtime;
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
+using System.Text;
 using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -12,6 +14,7 @@ builder.WebHost.UseUrls(string.IsNullOrWhiteSpace(hostUrls) ? "http://0.0.0.0:50
 builder.Services.AddSingleton<INativeRuntimeProbe, NativeRuntimeProbe>();
 builder.Services.AddSingleton<IRuntimeReplicationService, RuntimeReplicationService>();
 builder.Services.AddSingleton<IRoomWorkspaceService, RoomWorkspaceService>();
+builder.Services.AddActiveSyncHostProviders(builder.Configuration);
 
 builder.Services.AddCors(options =>
 {
@@ -41,6 +44,8 @@ builder.Services.AddCors(options =>
 var app = builder.Build();
 
 var signalRooms = new ConcurrentDictionary<string, ConcurrentDictionary<string, WebSocket>>(StringComparer.OrdinalIgnoreCase);
+var runtimeRooms = new ConcurrentDictionary<string, ConcurrentDictionary<string, (string RoomId, string PeerId, WebSocket Socket)>>(StringComparer.OrdinalIgnoreCase);
+var runtimePresence = new ConcurrentDictionary<string, ConcurrentDictionary<string, (object? Data, long ExpiresAtUnixMs)>>(StringComparer.OrdinalIgnoreCase);
 
 app.UseCors("WebReactDev");
 app.UseWebSockets();
@@ -354,6 +359,9 @@ app.MapGet("/api/workspace/rooms/{roomId}/signal", async (HttpContext context, s
     }
 });
 
+app.Map("/ws/runtime", HandleRuntimeWebSocketAsync);
+app.Map("/ws/{roomId}", HandleRuntimeWebSocketAsync);
+
 static async Task SendJsonAsync(WebSocket socket, object payload, CancellationToken cancellationToken)
 {
     if (socket.State != WebSocketState.Open)
@@ -391,6 +399,422 @@ static async Task BroadcastToRoomAsync(
             // Best-effort broadcast; stale socket cleanup happens on disconnect paths.
         }
     }
+}
+
+async Task HandleRuntimeWebSocketAsync(HttpContext context)
+{
+    if (!context.WebSockets.IsWebSocketRequest)
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await context.Response.WriteAsync("WebSocket upgrade required");
+        return;
+    }
+
+    using var socket = await context.WebSockets.AcceptWebSocketAsync();
+
+    (string RoomId, string PeerId, WebSocket Socket)? session = null;
+    var buffer = new byte[64 * 1024];
+    try
+    {
+        while (socket.State == WebSocketState.Open && !context.RequestAborted.IsCancellationRequested)
+        {
+            var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), context.RequestAborted);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                break;
+            }
+
+            if (result.MessageType != WebSocketMessageType.Text || result.Count == 0)
+            {
+                continue;
+            }
+
+            var payloadText = Encoding.UTF8.GetString(buffer, 0, result.Count);
+            using var messageDocument = JsonDocument.Parse(payloadText);
+            var root = messageDocument.RootElement;
+            var messageType = TryGetString(root, "type");
+            if (string.IsNullOrWhiteSpace(messageType))
+            {
+                continue;
+            }
+
+            if (string.Equals(messageType, "hello", StringComparison.OrdinalIgnoreCase))
+            {
+                session = await InitializeRuntimeSessionAsync(context, socket, root, runtimeRooms, context.RequestAborted);
+                if (session is null)
+                {
+                    continue;
+                }
+
+                continue;
+            }
+
+            if (session is null)
+            {
+                await SendJsonAsync(socket, new
+                {
+                    type = "error",
+                    message = "hello required"
+                }, context.RequestAborted);
+                continue;
+            }
+
+            if (string.Equals(messageType, "presence-set", StringComparison.OrdinalIgnoreCase))
+            {
+                await HandlePresenceSetAsync(session.Value, root, runtimeRooms, runtimePresence, context.RequestAborted);
+                continue;
+            }
+
+            if (string.Equals(messageType, "presence-get", StringComparison.OrdinalIgnoreCase))
+            {
+                await HandlePresenceGetAsync(session.Value, runtimePresence, context.RequestAborted);
+                continue;
+            }
+
+            if (string.Equals(messageType, "presence-sweep", StringComparison.OrdinalIgnoreCase))
+            {
+                await HandlePresenceSweepAsync(session.Value, root, runtimeRooms, runtimePresence, context.RequestAborted);
+                continue;
+            }
+
+            if (string.Equals(messageType, "webrtc-offer", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(messageType, "webrtc-answer", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(messageType, "webrtc-ice", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(messageType, "peer-signal", StringComparison.OrdinalIgnoreCase))
+            {
+                await RelayRuntimeSignalAsync(session.Value, root, messageType, runtimeRooms, context.RequestAborted);
+                continue;
+            }
+
+            if (string.Equals(messageType, "pull", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(messageType, "push", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(messageType, "blob-request", StringComparison.OrdinalIgnoreCase))
+            {
+                await SendJsonAsync(socket, new { type = "noop-ack" }, context.RequestAborted);
+            }
+        }
+    }
+    catch (OperationCanceledException)
+    {
+        // Request aborted.
+    }
+    catch (WebSocketException)
+    {
+        // Socket closed unexpectedly.
+    }
+    finally
+    {
+        if (session is not null)
+        {
+            await RemoveRuntimeSessionAsync(session.Value, runtimeRooms, runtimePresence, CancellationToken.None);
+        }
+
+        if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+        {
+            await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "runtime closed", CancellationToken.None);
+        }
+    }
+}
+
+static async Task<(string RoomId, string PeerId, WebSocket Socket)?> InitializeRuntimeSessionAsync(
+    HttpContext context,
+    WebSocket socket,
+    JsonElement hello,
+    ConcurrentDictionary<string, ConcurrentDictionary<string, (string RoomId, string PeerId, WebSocket Socket)>> runtimeRooms,
+    CancellationToken cancellationToken)
+{
+    var routeRoom = context.Request.RouteValues.TryGetValue("roomId", out var routeRoomValue)
+        ? routeRoomValue?.ToString()
+        : null;
+    if (string.Equals(routeRoom, "runtime", StringComparison.OrdinalIgnoreCase))
+    {
+        routeRoom = null;
+    }
+
+    var requestedRoom = TryGetString(hello, "room") ?? TryGetString(hello, "roomId") ?? routeRoom;
+    if (string.IsNullOrWhiteSpace(requestedRoom))
+    {
+        requestedRoom = "default";
+    }
+
+    var peerId = TryGetString(hello, "pubkey")
+        ?? TryGetString(hello, "peerId")
+        ?? $"peer-{Guid.NewGuid():N}";
+
+    var roomPeers = runtimeRooms.GetOrAdd(requestedRoom, _ => new ConcurrentDictionary<string, (string RoomId, string PeerId, WebSocket Socket)>(StringComparer.OrdinalIgnoreCase));
+    var session = (RoomId: requestedRoom, PeerId: peerId, Socket: socket);
+
+    if (roomPeers.TryGetValue(peerId, out var existingSession) && !ReferenceEquals(existingSession.Socket, socket))
+    {
+        try
+        {
+            if (existingSession.Socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+            {
+                await existingSession.Socket.CloseOutputAsync(WebSocketCloseStatus.PolicyViolation, "peer replaced", cancellationToken);
+            }
+        }
+        catch
+        {
+            // Best effort.
+        }
+    }
+
+    roomPeers[peerId] = session;
+
+    var knownPeers = roomPeers.Keys.Where(value => !string.Equals(value, peerId, StringComparison.OrdinalIgnoreCase)).ToArray();
+    await SendJsonAsync(socket, new
+    {
+        type = "welcome",
+        room = requestedRoom,
+        peerId,
+        peers = knownPeers
+    }, cancellationToken);
+
+    await BroadcastRuntimeRoomAsync(roomPeers, new
+    {
+        type = "peer-joined",
+        room = requestedRoom,
+        peerId,
+        from = peerId
+    }, excludePeerId: peerId, cancellationToken);
+
+    return session;
+}
+
+static async Task RemoveRuntimeSessionAsync(
+    (string RoomId, string PeerId, WebSocket Socket) session,
+    ConcurrentDictionary<string, ConcurrentDictionary<string, (string RoomId, string PeerId, WebSocket Socket)>> runtimeRooms,
+    ConcurrentDictionary<string, ConcurrentDictionary<string, (object? Data, long ExpiresAtUnixMs)>> runtimePresence,
+    CancellationToken cancellationToken)
+{
+    if (!runtimeRooms.TryGetValue(session.RoomId, out var roomPeers))
+    {
+        return;
+    }
+
+    if (roomPeers.TryGetValue(session.PeerId, out var current) && ReferenceEquals(current.Socket, session.Socket))
+    {
+        roomPeers.TryRemove(session.PeerId, out _);
+    }
+
+    if (runtimePresence.TryGetValue(session.RoomId, out var roomPresence))
+    {
+        roomPresence.TryRemove(session.PeerId, out _);
+    }
+
+    await BroadcastRuntimeRoomAsync(roomPeers, new
+    {
+        type = "peer-left",
+        room = session.RoomId,
+        peerId = session.PeerId,
+        from = session.PeerId
+    }, excludePeerId: session.PeerId, cancellationToken);
+
+    if (roomPeers.IsEmpty)
+    {
+        runtimeRooms.TryRemove(session.RoomId, out _);
+        runtimePresence.TryRemove(session.RoomId, out _);
+    }
+}
+
+static async Task RelayRuntimeSignalAsync(
+    (string RoomId, string PeerId, WebSocket Socket) session,
+    JsonElement payload,
+    string messageType,
+    ConcurrentDictionary<string, ConcurrentDictionary<string, (string RoomId, string PeerId, WebSocket Socket)>> runtimeRooms,
+    CancellationToken cancellationToken)
+{
+    var targetPeerId = TryGetString(payload, "to");
+    if (string.IsNullOrWhiteSpace(targetPeerId))
+    {
+        return;
+    }
+
+    if (!runtimeRooms.TryGetValue(session.RoomId, out var roomPeers)
+        || !roomPeers.TryGetValue(targetPeerId, out var targetSession)
+        || targetSession.Socket.State != WebSocketState.Open)
+    {
+        return;
+    }
+
+    await SendJsonAsync(targetSession.Socket, new
+    {
+        type = messageType,
+        room = session.RoomId,
+        from = session.PeerId,
+        peerId = session.PeerId,
+        to = targetPeerId,
+        sdp = TryGetString(payload, "sdp"),
+        candidate = TryGetString(payload, "candidate"),
+        sdpMid = TryGetString(payload, "sdpMid"),
+        sdpMLineIndex = TryGetInt(payload, "sdpMLineIndex")
+    }, cancellationToken);
+}
+
+static async Task HandlePresenceSetAsync(
+    (string RoomId, string PeerId, WebSocket Socket) session,
+    JsonElement payload,
+    ConcurrentDictionary<string, ConcurrentDictionary<string, (string RoomId, string PeerId, WebSocket Socket)>> runtimeRooms,
+    ConcurrentDictionary<string, ConcurrentDictionary<string, (object? Data, long ExpiresAtUnixMs)>> runtimePresence,
+    CancellationToken cancellationToken)
+{
+    if (!payload.TryGetProperty("data", out var dataElement))
+    {
+        return;
+    }
+
+    var nowUnixMs = TryGetLong(payload, "now_unix_ms") ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    var ttlMs = TryGetLong(payload, "ttl_ms") ?? 20_000;
+    var expiresAtUnixMs = nowUnixMs + Math.Max(0, ttlMs);
+    var data = JsonSerializer.Deserialize<object?>(dataElement.GetRawText());
+
+    var roomPresence = runtimePresence.GetOrAdd(session.RoomId, _ => new ConcurrentDictionary<string, (object? Data, long ExpiresAtUnixMs)>(StringComparer.OrdinalIgnoreCase));
+    roomPresence[session.PeerId] = (Data: data, ExpiresAtUnixMs: expiresAtUnixMs);
+
+    if (!runtimeRooms.TryGetValue(session.RoomId, out var roomPeers))
+    {
+        return;
+    }
+
+    await BroadcastRuntimeRoomAsync(roomPeers, new
+    {
+        type = "presence",
+        room = session.RoomId,
+        from = session.PeerId,
+        peerId = session.PeerId,
+        data
+    }, excludePeerId: null, cancellationToken);
+}
+
+static async Task HandlePresenceGetAsync(
+    (string RoomId, string PeerId, WebSocket Socket) session,
+    ConcurrentDictionary<string, ConcurrentDictionary<string, (object? Data, long ExpiresAtUnixMs)>> runtimePresence,
+    CancellationToken cancellationToken)
+{
+    if (!runtimePresence.TryGetValue(session.RoomId, out var roomPresence))
+    {
+        await SendJsonAsync(session.Socket, new
+        {
+            type = "presence-snapshot",
+            room = session.RoomId,
+            entries = Array.Empty<object>()
+        }, cancellationToken);
+        return;
+    }
+
+    var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    var entries = roomPresence
+        .Where(pair => pair.Value.ExpiresAtUnixMs >= now)
+        .Select(pair => new
+        {
+            from = pair.Key,
+            peerId = pair.Key,
+            data = pair.Value.Data,
+            expires_at_ms = pair.Value.ExpiresAtUnixMs
+        })
+        .ToArray();
+
+    await SendJsonAsync(session.Socket, new
+    {
+        type = "presence-snapshot",
+        room = session.RoomId,
+        entries
+    }, cancellationToken);
+}
+
+static async Task HandlePresenceSweepAsync(
+    (string RoomId, string PeerId, WebSocket Socket) session,
+    JsonElement payload,
+    ConcurrentDictionary<string, ConcurrentDictionary<string, (string RoomId, string PeerId, WebSocket Socket)>> runtimeRooms,
+    ConcurrentDictionary<string, ConcurrentDictionary<string, (object? Data, long ExpiresAtUnixMs)>> runtimePresence,
+    CancellationToken cancellationToken)
+{
+    if (!runtimePresence.TryGetValue(session.RoomId, out var roomPresence))
+    {
+        return;
+    }
+
+    var nowUnixMs = TryGetLong(payload, "now_unix_ms") ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    var expiredPeerIds = roomPresence
+        .Where(pair => pair.Value.ExpiresAtUnixMs < nowUnixMs)
+        .Select(pair => pair.Key)
+        .ToArray();
+
+    foreach (var peerId in expiredPeerIds)
+    {
+        roomPresence.TryRemove(peerId, out _);
+    }
+
+    if (expiredPeerIds.Length == 0)
+    {
+        return;
+    }
+
+    if (!runtimeRooms.TryGetValue(session.RoomId, out var roomPeers))
+    {
+        return;
+    }
+
+    foreach (var peerId in expiredPeerIds)
+    {
+        await BroadcastRuntimeRoomAsync(roomPeers, new
+        {
+            type = "presence-leave",
+            room = session.RoomId,
+            from = peerId,
+            peerId
+        }, excludePeerId: null, cancellationToken);
+    }
+}
+
+static async Task BroadcastRuntimeRoomAsync(
+    ConcurrentDictionary<string, (string RoomId, string PeerId, WebSocket Socket)> roomPeers,
+    object payload,
+    string? excludePeerId,
+    CancellationToken cancellationToken)
+{
+    foreach (var (peerId, session) in roomPeers)
+    {
+        if (!string.IsNullOrWhiteSpace(excludePeerId) && string.Equals(peerId, excludePeerId, StringComparison.OrdinalIgnoreCase))
+        {
+            continue;
+        }
+
+        if (session.Socket.State != WebSocketState.Open)
+        {
+            continue;
+        }
+
+        try
+        {
+            await SendJsonAsync(session.Socket, payload, cancellationToken);
+        }
+        catch
+        {
+            // Best-effort broadcast.
+        }
+    }
+}
+
+static string? TryGetString(JsonElement element, string propertyName)
+{
+    return element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+        ? property.GetString()
+        : null;
+}
+
+static int? TryGetInt(JsonElement element, string propertyName)
+{
+    return element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out var value)
+        ? value
+        : null;
+}
+
+static long? TryGetLong(JsonElement element, string propertyName)
+{
+    return element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.Number && property.TryGetInt64(out var value)
+        ? value
+        : null;
 }
 
 app.Run();

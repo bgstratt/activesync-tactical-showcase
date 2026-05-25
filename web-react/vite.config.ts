@@ -17,8 +17,38 @@ function resolveBuildRef(): string {
 
 const buildRef = resolveBuildRef();
 
+function setWasmMimeHeader(url: string | undefined, res: { setHeader: (name: string, value: string) => void }): void {
+  if (!url) {
+    return;
+  }
+
+  const path = url.split("?")[0] ?? "";
+  if (!path.endsWith(".wasm")) {
+    return;
+  }
+
+  res.setHeader("Content-Type", "application/wasm");
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: "wasm-mime-type-fix",
+      configureServer(server) {
+        server.middlewares.use((req, res, next) => {
+          setWasmMimeHeader(req.url, res);
+          next();
+        });
+      },
+      configurePreviewServer(server) {
+        server.middlewares.use((req, res, next) => {
+          setWasmMimeHeader(req.url, res);
+          next();
+        });
+      }
+    }
+  ],
   define: {
     "import.meta.env.VITE_BUILD_REF": JSON.stringify(buildRef)
   }

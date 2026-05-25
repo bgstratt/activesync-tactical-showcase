@@ -10,6 +10,8 @@ Minimal embedded .NET host for the ActiveSync Tactical Showcase demo.
 - GET `/api/replication/events?take=60`: recent runtime command/event replay stream.
 - POST `/api/runtime/peers/connect`: connect a peer into the demo room.
 - POST `/api/runtime/peers/disconnect`: close a peer session.
+- WS `/ws/runtime`: SDK runtime websocket endpoint (room selected via `hello.room`).
+- WS `/ws/{roomId}`: compatibility runtime websocket endpoint with room in URL.
 
 These endpoints are tactical-showcase host APIs. They are not direct HTTP mirrors of NuGet package methods.
 The NuGet integration provides the native ActiveSync runtime library; this host maps showcase-specific HTTP/WebSocket routes onto that runtime via its runtime services.
@@ -29,6 +31,10 @@ If native runtime is not found, `/api/host/health` remains available and reports
 ### Local NuGet Package Mode (Recommended)
 
 Use local ActiveSync NuGet artifacts from the sibling `activeSync` repo.
+
+The tactical host now consumes the managed host package layer (`ActiveSync.Host.Abstractions` +
+`ActiveSync.Host.Composition`) in addition to RID-native runtime packages. This aligns tactical
+startup wiring with the package-first host model instead of only loading native FFI binaries.
 
 1. Build local packages in `activeSync` first:
 
